@@ -1,0 +1,16 @@
+{
+  "name": "prototype-frontmatter-roundtrip",
+  "private": true,
+  "type": "module",
+  "description": "PROTOTYPE — throwaway. Answers whether front matter can be patched without laundering it, inside the bundle budget.",
+  "scripts": {
+    "start": "node run.js",
+    "size": "node size.js"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

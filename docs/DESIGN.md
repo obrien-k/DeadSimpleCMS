@@ -96,11 +96,13 @@ One HTML file at `/admin/index.html` in the user's site repo, loading a pinned, 
 
 ### Front-matter round-trip safety
 
-**A hard invariant:** unknown front-matter keys, comments, key order, and formatting are preserved verbatim. Opening and saving a file the owner hand-edits elsewhere must never launder it. Front matter is edited as a **keyed patch over the original YAML text** — never parsed-and-redumped, which would silently normalise quoting, drop comments, and reorder keys.
+**A hard invariant:** unknown front-matter keys, comments, key order, and formatting are preserved verbatim. Opening and saving a file the owner hand-edits elsewhere must never launder it.
 
-This is the single hardest engineering problem in the project and it collides with the size budget. JS has no lightweight round-trip YAML editor; `yaml` (eemeli) supports CST-preserving edits at roughly 15 kB gzipped, against a ~100 kB budget that must also hold Preact, a markdown renderer, and the app itself.
+**Resolved by prototype** (`prototype/frontmatter-roundtrip/`, July 2026). The invariant holds, at roughly double the expected cost. Findings:
 
-It is therefore **prototype task #1**. If the invariant can't be held inside the budget, the design changes — better to learn that before there is code to throw away.
+- **Use `yaml`'s CST API, not its AST API.** The obvious route — `parseDocument` → `doc.setIn()` → `doc.toString()` — is parse-and-redump by another name: it keeps comments and key order but re-renders every line, normalising `layout:      post` → `layout: post`, reflowing folded scalars onto one line, and rewriting flow arrays. `keepSourceTokens` does not prevent this; the flag preserves the tokens but `toString()` ignores them. The working route is `Parser` → `Composer({keepSourceTokens})` → `CST.setScalarValue(node.srcToken, v)` → `CST.stringify(token)`, which re-emits every byte the parser saw. Verified byte-identical across comments, nested maps, block/folded/literal scalars, flow arrays, anchors/aliases, odd spacing, and unicode.
+- **Budget: ~30 kB gzipped, not ~15 kB, and it does not tree-shake** (CST-only saves 0.8 kB over the full library — `Parser` + `Composer` pull in nearly everything). Still fits: ~30 + ~4 Preact + ~13 markdown ≈ 47 kB, leaving ~50 kB for the app. If it tightens, code-split the patcher behind the editor route — the post list doesn't need it.
+- **Adding a new key has no CST path.** `CST.setScalarValue` only edits existing scalars, so front-matter inference (adding `description` where none exists) needs a text insertion before the closing `---`. Serialize the value with `yaml`'s `stringify()` rather than hand-building the line, or a title containing `: `, a leading `#`, or a quote will emit broken YAML. Open question: a naive append lands the new key under whatever comment block ends the front matter, so it reads as though that comment labels it — insertion point wants to be after the last *uncommented* key.
 
 ### Publish = the finish line (the differentiator)
 
@@ -164,3 +166,4 @@ TypeScript + Preact (~4 kB runtime). No React. Bundle budget ~100 kB gzipped tot
 | Distribution | In-repo `/admin/` | Decap-familiar, host-agnostic, owner pins the version; no central service to run or trust |
 | Stack | TypeScript + Preact | ~4 kB runtime, JSX ergonomics, fits the size budget |
 | Editor | textarea + preview | Minimalism over WYSIWYG; block editors are where CMS bundles go to bloat |
+| Front matter | `yaml` CST API, ~30 kB gz | Only route that preserves formatting byte-for-byte; the AST API launders files. Prototype-verified — costs 2× the original estimate, still inside budget |
