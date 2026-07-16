@@ -85,8 +85,15 @@ One HTML file at `/admin/index.html` in the user's site repo, loading a pinned, 
 - **Writes** use the Git Data API (create blob → create tree → create commit → update ref). The Contents API is one-file-per-commit and has no move operation, so it cannot express the operations this app needs:
   - Publish is a *move* (`_drafts/x.md` → `_posts/YYYY-MM-DD-x.md`). Via Contents that is create+delete — two commits, non-atomic, and a failed delete leaves a **duplicate post live on the site**. Via Git Data it is one tree, one commit.
   - Insert-image-and-save is two files. One commit means one build instead of two.
-  - Cost: ~4 API calls per save instead of one. Worth it for the atomicity.
-- Every write is still compare-and-swap: the ref update is guarded on the parent commit sha, and per-file edits on the blob sha read at open time. Concurrent edits surface as a plain-language conflict ("this post changed since you opened it"), never silent clobbering.
+  - Cost: 6 API calls per save (`getRef`, `getCommit`, `createBlob`, `createTree`, `createCommit`, `updateRef`) instead of one. Two are avoidable by caching the head commit's tree sha from the initial load. Worth it for the atomicity.
+- **Prototype-verified** (`prototype/git-data-move/`, July 2026), against a scratch repo with a real fine-grained PAT:
+  - `contents: write` reaches every Git Data endpoint — no separate permission, no 403. The permission set above is correct as written.
+  - The move is atomic, and GitHub proves it: the API reports the commit as a single `renamed` file with `previous_filename` set, not an add plus a delete. Rename detection only fires *within* one commit, so this is direct evidence that no intermediate two-copies state ever existed.
+  - Image + post in one commit, one build. Unicode round-trips intact via `TextEncoder`.
+- **Concurrency has two independent guards, and the server-side one is the real guarantee:**
+  - *Client-side*: re-read HEAD before writing and compare against the sha read at open time; refuse if it moved. Surfaces as a plain-language conflict ("this post changed since you opened it") before any write happens.
+  - *Server-side*: `PATCH git/refs` with **`force: false` rejects a non-fast-forward update with `422 Update is not a fast forward`.** Even a buggy or racy client cannot clobber HEAD with a stale-parented commit.
+  - **Never pass `force: true`.** That single flag is the entire safety property — it is the Git Data equivalent of the blob-sha compare-and-swap, and it is free.
 - Content is base64 on the wire in both directions. **Encode/decode via `TextEncoder`/`TextDecoder`, never bare `atob`/`btoa`** — those mangle non-ASCII, so a single emoji in a post corrupts the file, silently and only for some users.
 
 ### Jekyll-aware, zero config
@@ -161,7 +168,7 @@ TypeScript + Preact (~4 kB runtime). No React. Bundle budget ~100 kB gzipped tot
 |---|---|---|
 | Build vs fork vs plugin | Standalone | Decap fork = rewrite with fork burden; plugin = undocumented backend API + still ships Decap's weight |
 | Auth (MVP) | PAT-only, guided | Zero infrastructure; device flow is CORS-blocked in browsers; OAuth worker deferred to phase 3 |
-| Write API | Git Data API, not Contents | Contents is one-file-per-commit with no move: publish would be a non-atomic create+delete that can leave a duplicate post live. Git Data buys atomic multi-file commits for ~4 calls per save |
+| Write API | Git Data API, not Contents | Contents is one-file-per-commit with no move: publish would be a non-atomic create+delete that can leave a duplicate post live. Git Data buys atomic multi-file commits for 6 calls per save (~4 with caching). Prototype-verified, including that a fine-grained PAT's `contents: write` reaches the endpoints |
 | Live-URL discovery | `sitemap.xml`, not `_config.yml` | Jekyll already computed the URL; deriving it means reimplementing permalink styles, `baseurl`, categories, and CNAME handling, and owning every edge case |
 | Distribution | In-repo `/admin/` | Decap-familiar, host-agnostic, owner pins the version; no central service to run or trust |
 | Stack | TypeScript + Preact | ~4 kB runtime, JSX ergonomics, fits the size budget |
