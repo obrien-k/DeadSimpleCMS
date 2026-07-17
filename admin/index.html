@@ -1,0 +1,34 @@
+<!doctype html>
+<!--
+  DeadSimpleCMS admin page — the config anchor and trust root.
+  This file is written by the installer and only by the installer. The line
+  that matters is the dscms:repo meta tag: it is authoritative for which
+  repository this page edits, and self-update never rewrites this file — only
+  bundle.js. (In a fresh checkout the tag is absent, which triggers the
+  first-run prompt instead.)
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeadSimpleCMS</title>
+    <!-- installer writes: <meta name="dscms:repo" content="owner/name"> -->
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 46rem; padding: 1rem; }
+      label { display: block; margin: 0.75rem 0; }
+      input, textarea { width: 100%; font: inherit; padding: 0.4rem; box-sizing: border-box; }
+      textarea { min-height: 22rem; font-family: ui-monospace, monospace; }
+      button, .button { font: inherit; padding: 0.4rem 1rem; margin-left: 0.5rem; }
+      .banner { padding: 0.6rem; background: #fffbe6; border: 1px solid #e6d87a; }
+      .banner.error { background: #fdeaea; border-color: #e08c8c; }
+      .callout { padding: 0.6rem; background: #eaf3fd; border: 1px solid #8cb8e0; }
+      .editor header, .list header { display: flex; justify-content: space-between; align-items: center; }
+      .publish ol li.past { color: #777; }
+      time { color: #777; margin-left: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="./bundle.js"></script>
+  </body>
+</html>
