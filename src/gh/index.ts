@@ -22,9 +22,19 @@ export interface Entry {
   oid: string;
 }
 
-export interface Listing {
-  posts: Entry[];
-  drafts: Entry[];
+export interface PathQuery {
+  /** Explicit: the branch Pages builds is not always the repo default (#17). */
+  branch: string;
+  /** Paths to read as trees. */
+  dirs?: string[];
+  /** Paths to read as file text. */
+  files?: string[];
+}
+
+export interface PathResult {
+  /** Keyed by the path asked for. `null` = no such path, which is normal. */
+  dirs: Map<string, Entry[] | null>;
+  files: Map<string, string | null>;
 }
 
 export interface BlobResult {
@@ -53,10 +63,28 @@ export interface DeploymentStatus {
   environment_url?: string;
 }
 
+export interface PagesSource {
+  /** The branch Pages builds — NOT necessarily the repo's default branch. */
+  branch: string;
+  /** Jekyll's source root within the branch: "/" or "/docs". */
+  path: string;
+}
+
 export interface PagesInfo {
   html_url: string;
   status: string | null;
   https_enforced?: boolean;
+  // #17: `source` and `build_type` were in this response all along and thrown
+  // away, which is how `HEAD:_posts` survived. Both are documented fields.
+  source?: PagesSource;
+  /** "legacy" = branch build (source is authoritative); "workflow" = Actions builds it, so source describes a setting that is not in play. */
+  build_type?: 'legacy' | 'workflow' | null;
+}
+
+export interface RepoInfo {
+  default_branch: string;
+  /** GET /pages 404s on a private repo unless the token carries Pages:read, and a 404 is indistinguishable from "Pages is off" — so this is what keeps that message honest (#17). */
+  private: boolean;
 }
 
 // btoa(String.fromCharCode(...bytes)) overflows the stack on large files;
@@ -87,7 +115,7 @@ export interface ClientOptions {
 export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOptions) {
   const [owner, name] = repo.split('/');
   let expiry: Date | null = null;
-  let defaultBranch: string | null = null;
+  let repoInfo: RepoInfo | null = null;
 
   async function rest<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetchImpl(`${API}${path}`, {
@@ -139,33 +167,57 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
   return {
     tokenExpiry: () => expiry,
 
-    getRepo() {
-      return rest<{ default_branch: string }>('GET', `/repos/${repo}`);
+    // Memoized per session: both fields are read on every load (#17's layout
+    // resolution) and neither changes under a running app.
+    async getRepo(): Promise<RepoInfo> {
+      if (!repoInfo) repoInfo = await rest<RepoInfo>('GET', `/repos/${repo}`);
+      return repoInfo;
     },
 
     async getDefaultBranch(): Promise<string> {
-      if (!defaultBranch) defaultBranch = (await this.getRepo()).default_branch;
-      return defaultBranch;
+      return (await this.getRepo()).default_branch;
     },
 
-    // Phase-1 listing: the only call in steady state. Lean on purpose — asking
-    // for `text` here costs ~17× the bytes to refill an almost-always-warm
-    // cache. A missing directory is `object: null`, which is normal.
-    async listEntries(): Promise<Listing> {
-      type Dir = { entries: Entry[] } | null;
-      const data = await graphql<{ repository: { posts: Dir; drafts: Dir } }>(
+    // Batch tree/file reads at one commit-ish, one query. Deliberately knows
+    // nothing about Jekyll: it took `HEAD:_posts` being hardcoded here to hide
+    // #17 for a whole phase, so the caller names every path and this only
+    // fetches. `branch` is explicit for the same reason — `HEAD` silently meant
+    // "the default branch", which is not necessarily the branch Pages builds.
+    //
+    // Lean on purpose: `text` is asked for only where the caller wants a file,
+    // never for listing entries (~17× the bytes to refill an almost-always-warm
+    // cache). A missing path is `object: null`, which is normal, not an error.
+    async queryPaths({ branch, dirs = [], files = [] }: PathQuery): Promise<PathResult> {
+      const out: PathResult = { dirs: new Map(), files: new Map() };
+      if (dirs.length === 0 && files.length === 0) return out;
+
+      const expr = (p: string) => JSON.stringify(`${branch}:${p}`);
+      const aliases = [
+        ...dirs.map(
+          (p, i) => `d${i}: object(expression: ${expr(p)}) { ... on Tree { entries { name oid } } }`,
+        ),
+        ...files.map(
+          (p, i) => `f${i}: object(expression: ${expr(p)}) { ... on Blob { text isTruncated } }`,
+        ),
+      ].join('\n');
+
+      const data = await graphql<{
+        repository: Record<string, { entries?: Entry[]; text?: string | null; isTruncated?: boolean } | null>;
+      }>(
         `query($owner: String!, $name: String!) {
-          repository(owner: $owner, name: $name) {
-            posts: object(expression: "HEAD:_posts") { ... on Tree { entries { name oid } } }
-            drafts: object(expression: "HEAD:_drafts") { ... on Tree { entries { name oid } } }
-          }
+          repository(owner: $owner, name: $name) {\n${aliases}\n}
         }`,
         { owner, name },
       );
-      return {
-        posts: data.repository.posts?.entries ?? [],
-        drafts: data.repository.drafts?.entries ?? [],
-      };
+
+      dirs.forEach((p, i) => out.dirs.set(p, data.repository[`d${i}`]?.entries ?? null));
+      files.forEach((p, i) => {
+        const b = data.repository[`f${i}`];
+        // A truncated blob is a lie by omission — better to report absence than
+        // to parse half a config file.
+        out.files.set(p, b && !b.isTruncated ? (b.text ?? null) : null);
+      });
+      return out;
     },
 
     // Phase-2: cache misses only, blobs addressed directly by oid. Aliased oid

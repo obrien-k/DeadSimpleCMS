@@ -58,6 +58,21 @@ export function read(raw: string): { data: Record<string, unknown>; body: string
   return { data, body: parts.body };
 }
 
+// A whole YAML document, not front matter — `_config.yml` is the only caller
+// (#17, resolving where Jekyll reads from). It routes through this wrapper
+// because Jekyll reads _config.yml with the same Psych (YAML 1.1) parser as
+// front matter, so it needs the same version discipline; the module's name is
+// the only thing about that which is odd.
+// Non-mappings (empty file, a bare scalar, a list) come back as {}: every
+// caller wants keys or nothing. Malformed YAML throws — such a site cannot
+// build at all, so the caller decides whether that is worth reporting.
+export function parseYaml(raw: string): Record<string, unknown> {
+  const data = yamlParse(raw, YAML_11) as unknown;
+  return data && typeof data === 'object' && !Array.isArray(data)
+    ? (data as Record<string, unknown>)
+    : {};
+}
+
 const isScalarValue = (v: unknown): v is string | number | boolean | null =>
   v === null || typeof v !== 'object';
 

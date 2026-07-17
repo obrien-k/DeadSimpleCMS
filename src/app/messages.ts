@@ -2,11 +2,40 @@
 // blogger whose site is likely their only repo, who cannot read a stack
 // trace. Git/CI vocabulary stops at this file.
 import type { FinishLineEvent } from '../finishline/index.js';
+import type { LayoutBasis } from '../layout/index.js';
+
+// Where the app looked for posts, when it could not be told (#17). Silence was
+// the phase-1 bug: a /docs site showed an empty list and explained nothing.
+// 'pages' is absent on purpose — GitHub stated the root, so nothing was assumed
+// and there is nothing to confess.
+export function describeAssumedRoot(basis: Exclude<LayoutBasis, 'pages'>): string {
+  const tail =
+    ' This page is showing posts from the top level of your repository — if yours live somewhere else, they will not appear here.';
+  switch (basis) {
+    case 'workflow':
+      return (
+        'Your site is built by a GitHub Actions workflow, so your repository settings do not say where its posts are kept.' +
+        tail
+      );
+    case 'pages-unreadable':
+      return (
+        'Your repository is private, and this token is not allowed to read its GitHub Pages settings, so they cannot say where your posts are kept.' +
+        tail
+      );
+    case 'no-pages':
+      return (
+        'GitHub Pages is not turned on for this repository yet, so there are no settings saying where your posts are kept.' +
+        tail
+      );
+  }
+}
 
 export function describeEvent(e: FinishLineEvent): string {
   switch (e.kind) {
     case 'no-pages':
       return 'This repository does not have GitHub Pages turned on, so nothing can go live yet. In your repository settings, open “Pages” and choose a branch to publish from.';
+    case 'pages-unreadable':
+      return 'Your repository is private, and this token is not allowed to read its GitHub Pages settings — so whether your post went live cannot be confirmed here. Your changes are saved safely in the repository either way. To see publishing status, create the token again and also set “Pages” to “Read-only”.';
     case 'publishing':
       return 'Publishing…';
     case 'building':
@@ -49,4 +78,11 @@ export const MSG = {
     `Your GitHub token expires in ${days} day${days === 1 ? '' : 's'}. Create a new one soon, or publishing will stop working.`,
   staleEdit:
     'Saved. Heads up: the live page can keep showing the old text for up to 10 minutes after an edit.',
+  // Row 4 of #17's ladder: neither _config.yml nor _posts/ at the resolved
+  // root. Guessing on from here is how posts get written where Jekyll never
+  // reads, so the app stops instead.
+  noJekyllSite: (root: string) =>
+    `No Jekyll site was found in ${
+      root === '' ? 'the top level of this repository' : `the “${root}” folder of this repository`
+    }, so there is nowhere safe to save posts. Check that your repository settings under “Pages” point at the folder your site is actually in.`,
 };

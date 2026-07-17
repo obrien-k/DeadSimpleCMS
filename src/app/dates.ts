@@ -14,8 +14,12 @@ export function jekyllDate(now: Date, offsetMinutes: number = now.getTimezoneOff
   );
 }
 
-export function publishPath(slug: string, frontMatterDate: string): string {
-  return `_posts/${frontMatterDate.slice(0, 10)}-${slug}.md`;
+// `postsDir` is passed, never assumed: a /docs-served or collections_dir site
+// reads posts from somewhere else entirely, and a publish written to the wrong
+// place never goes live (#17). Jekyll's date-prefixed filename convention is
+// still ours to own — only the directory moves.
+export function publishPath(slug: string, frontMatterDate: string, postsDir: string): string {
+  return `${postsDir}/${frontMatterDate.slice(0, 10)}-${slug}.md`;
 }
 
 export function slugify(title: string): string {

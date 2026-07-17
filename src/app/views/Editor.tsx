@@ -3,12 +3,16 @@ import { marked } from 'marked';
 import type { GhClient } from '../../gh/index.js';
 import { GhError } from '../../gh/index.js';
 import { create, patch, read, split, type Edits } from '../../frontmatter/index.js';
+import type { Layout } from '../../layout/index.js';
 import { jekyllDate, publishPath, slugify } from '../dates.js';
+import { editRoute } from '../router.js';
 import { MSG } from '../messages.js';
 import type { PublishTarget } from './Publish.js';
 
 export interface EditorProps {
   gh: GhClient;
+  /** Where Jekyll reads from (#17). A publish written outside it never goes live. */
+  layout: Layout;
   /** null = new post */
   path: string | null;
   onPublished(target: PublishTarget): void;
@@ -69,9 +73,14 @@ const withBody = (raw: string, body: string): string => {
   return p.open + p.yaml + p.close + body;
 };
 
-export function EditorView({ gh, path, onPublished }: EditorProps) {
+export function EditorView({ gh, layout, path, onPublished }: EditorProps) {
   const isNew = path === null;
-  const isDraft = path?.startsWith('_drafts/') ?? false;
+  const isDraft = path !== null && layout.draftsDirs.some((d) => path.startsWith(`${d}/`));
+  // New files go to the root-most directory of their kind; the rest of the
+  // array (once `**/_posts` lands) is where Jekyll also *reads*, not where a
+  // writer would expect a new post to appear.
+  const newDraftsDir = layout.draftsDirs[0]!;
+  const newPostsDir = layout.postsDirs[0]!;
 
   const [loaded, setLoaded] = useState(!path);
   const [raw, setRaw] = useState('');
@@ -142,11 +151,12 @@ export function EditorView({ gh, path, onPublished }: EditorProps) {
           },
           body,
         );
+        const draftPath = `${newDraftsDir}/${slug}.md`;
         await gh.commit({
           message: `Draft: ${fields.title || slug}`,
-          changes: [{ path: `_drafts/${slug}.md`, content }],
+          changes: [{ path: draftPath, content }],
         });
-        location.hash = `#/edit/_drafts/${slug}.md`;
+        location.hash = editRoute(draftPath);
         return 'Draft saved.';
       }
       const parsed = read(raw);
@@ -167,14 +177,16 @@ export function EditorView({ gh, path, onPublished }: EditorProps) {
 
   const publish = () =>
     run(async () => {
-      // Publish = one atomic move commit: _drafts/x.md → _posts/DATE-x.md.
+      // Publish = one atomic move commit: <drafts>/x.md → <posts>/DATE-x.md,
+      // both resolved rather than assumed (#17).
       const date = fields.date || jekyllDate(new Date());
       const parsed = read(raw);
       const edits = diffEdits(original, { ...fields, date }, parsed?.data ?? {});
       let next = Object.keys(edits).length > 0 ? patch(raw, edits) : raw;
       next = withBody(next, body);
-      const slug = slugify(fields.title || path!.replace(/^_drafts\//, '').replace(/\.md$/, ''));
-      const to = publishPath(slug, date);
+      const fallbackSlug = path!.slice(path!.lastIndexOf('/') + 1).replace(/\.md$/, '');
+      const slug = slugify(fields.title || fallbackSlug);
+      const to = publishPath(slug, date, newPostsDir);
       const { sha } = await gh.commit({
         message: `Publish: ${fields.title || slug}`,
         changes: [{ path: to, content: next }],

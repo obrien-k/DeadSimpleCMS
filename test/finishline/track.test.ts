@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { trackPublish, type FinishLineEvent } from '../../src/finishline/index.js';
-import type { Deployment, DeploymentStatus, PagesInfo } from '../../src/gh/index.js';
+import type { Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../../src/gh/index.js';
 
 const SITE = 'https://kyle.example.com/blog/';
 
 interface FakeOpts {
   pages?: PagesInfo | null;
+  private?: boolean;
   deploymentAfter?: number; // polls before the deployment appears
   statuses?: string[][]; // per-poll status lists (newest first), last entry may carry success
   sitemap?: string | null; // null = 404
@@ -19,6 +20,10 @@ function fakes(opts: FakeOpts) {
   const gh = {
     getPages: async () =>
       'pages' in opts ? opts.pages! : ({ html_url: SITE, status: 'built' } as PagesInfo),
+    getRepo: async (): Promise<RepoInfo> => ({
+      default_branch: 'main',
+      private: opts.private ?? false,
+    }),
     getDeployment: async (): Promise<Deployment | null> =>
       ++deploymentPolls > (opts.deploymentAfter ?? 0)
         ? { id: 7, sha: 's', environment: 'github-pages' }
@@ -57,6 +62,15 @@ describe('trackPublish', () => {
     const f = fakes({ pages: null });
     const events = await drain(trackPublish({ ...f, now: NOW }, TARGET));
     expect(events).toEqual([{ kind: 'no-pages' }]);
+  });
+
+  // GET /pages 404s both when Pages is off and when the repo is private and the
+  // token lacks Pages:read. Reporting the second as the first tells a paying
+  // user their live site is switched off (#17).
+  it('a private repo cannot be told "Pages is not turned on"', async () => {
+    const f = fakes({ pages: null, private: true });
+    const events = await drain(trackPublish({ ...f, now: NOW }, TARGET));
+    expect(events).toEqual([{ kind: 'pages-unreadable' }]);
   });
 
   it('happy path: publishing → building → live at the sitemap URL, verified reachable', async () => {

@@ -9,10 +9,11 @@
 //   deployment's environment_url (GitHub stating the site root).
 // - A green build with the post absent from the sitemap means Jekyll
 //   deliberately skipped it; the local front matter says why, no API call.
-import type { Deployment, DeploymentStatus, PagesInfo } from '../gh/index.js';
+import type { Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../gh/index.js';
 
 export type FinishLineEvent =
   | { kind: 'no-pages' }
+  | { kind: 'pages-unreadable' }
   | { kind: 'publishing' }
   | { kind: 'building'; state: string }
   | { kind: 'build-failed' }
@@ -27,6 +28,7 @@ export type FinishLineEvent =
 export interface TrackDeps {
   gh: {
     getPages(): Promise<PagesInfo | null>;
+    getRepo(): Promise<RepoInfo>;
     getDeployment(sha: string): Promise<Deployment | null>;
     getDeploymentStatuses(id: number): Promise<DeploymentStatus[]>;
   };
@@ -90,9 +92,15 @@ export async function* trackPublish(
     sitemapRetries = 3,
   } = opts;
 
-  // One call answers "is Pages even configured?" before any polling.
+  // One call answers "is Pages even configured?" before any polling — but a 404
+  // has two causes GitHub refuses to distinguish: Pages is off, or the repo is
+  // private and this token lacks Pages:read (measured: a Contents-only token
+  // reads /pages fine on a public repo, never on a private one). `private`
+  // separates them, and it is already on a response we fetch. Told a private
+  // repo's owner "Pages is not turned on", we would be flatly lying about a
+  // site that is live.
   if ((await gh.getPages()) === null) {
-    yield { kind: 'no-pages' };
+    yield { kind: (await gh.getRepo()).private ? 'pages-unreadable' : 'no-pages' };
     return;
   }
 

@@ -50,9 +50,17 @@ describe('jekyllDate: local time, never toISOString', () => {
 });
 
 describe('publish path', () => {
-  it('derives _posts/YYYY-MM-DD-slug.md from the front-matter date', () => {
-    expect(publishPath('my-post', '2026-07-17 01:30:00 +0200')).toBe(
+  it('derives YYYY-MM-DD-slug.md from the front-matter date', () => {
+    expect(publishPath('my-post', '2026-07-17 01:30:00 +0200', '_posts')).toBe(
       '_posts/2026-07-17-my-post.md',
+    );
+  });
+
+  // #17: the directory is resolved, never assumed — a /docs site publishing to
+  // `_posts/` writes where Jekyll never reads, and the post silently never goes live.
+  it('publishes into the resolved posts directory, wherever it is', () => {
+    expect(publishPath('my-post', '2026-07-17 01:30:00 +0200', 'docs/_posts')).toBe(
+      'docs/_posts/2026-07-17-my-post.md',
     );
   });
 });

@@ -16,7 +16,7 @@ export interface PublishProps {
 }
 
 const TERMINAL = new Set([
-  'no-pages', 'build-failed', 'live', 'live-unverified', 'skipped',
+  'no-pages', 'pages-unreadable', 'build-failed', 'live', 'live-unverified', 'skipped',
   'baseurl-misconfigured', 'not-in-sitemap', 'built-no-sitemap', 'timeout',
 ]);
 

@@ -3,7 +3,8 @@
 // misses. Blob oids are content hashes, so the oid-keyed cache never goes
 // stale: an edited post is a new oid, i.e. a miss. Invalidation is deleted,
 // not managed.
-import type { BlobResult, Entry } from '../gh/index.js';
+import type { BlobResult } from '../gh/index.js';
+import type { FoundFile, Resolved } from '../layout/index.js';
 import { read } from '../frontmatter/index.js';
 
 export interface PostMeta {
@@ -22,7 +23,6 @@ export interface ListingResult {
 }
 
 interface ListingSource {
-  listEntries(): Promise<{ posts: Entry[]; drafts: Entry[] }>;
   fetchBlobs(oids: string[]): Promise<Map<string, BlobResult>>;
 }
 
@@ -59,13 +59,20 @@ function readCache(storage: KVStorage): Record<string, CacheEntry> {
   }
 }
 
-export async function loadListing(gh: ListingSource, storage: KVStorage): Promise<ListingResult> {
-  const { posts, drafts } = await gh.listEntries();
+// Entries arrive already resolved and already fetched (#17): where Jekyll reads
+// from is `src/layout/`'s question, and answering it costs the same query that
+// would fetch them. This module never names `_posts` — that hardcode is what
+// hid #17 for a phase.
+export async function loadListing(
+  gh: ListingSource,
+  storage: KVStorage,
+  { entries }: Resolved,
+): Promise<ListingResult> {
   const cache = readCache(storage);
 
   const all = [
-    ...posts.map((e) => ({ e, draft: false })),
-    ...drafts.map((e) => ({ e, draft: true })),
+    ...entries.posts.map((e) => ({ e, draft: false })),
+    ...entries.drafts.map((e) => ({ e, draft: true })),
   ];
 
   const misses = all.filter(({ e }) => !cache[e.oid]).map(({ e }) => e.oid);
@@ -82,10 +89,10 @@ export async function loadListing(gh: ListingSource, storage: KVStorage): Promis
     storage.setItem(CACHE_KEY, JSON.stringify(cache));
   }
 
-  const toMeta = ({ e, draft }: { e: Entry; draft: boolean }): PostMeta => {
+  const toMeta = ({ e, draft }: { e: FoundFile; draft: boolean }): PostMeta => {
     const { slug, date } = parseName(e.name, draft);
     return {
-      path: `${draft ? '_drafts' : '_posts'}/${e.name}`,
+      path: e.path,
       slug,
       date,
       title: cache[e.oid]?.title || humanize(slug),

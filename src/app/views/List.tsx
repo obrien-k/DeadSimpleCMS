@@ -1,26 +1,25 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { GhClient } from '../../gh/index.js';
 import { loadListing, type ListingResult } from '../../listing/index.js';
+import type { Resolved } from '../../layout/index.js';
 import { editRoute } from '../router.js';
 
 export interface ListProps {
   gh: GhClient;
   storage: Storage;
-  onLoaded(): void;
+  /** Entries arrive resolved: where Jekyll reads from is settled before this view runs (#17). */
+  resolved: Resolved;
 }
 
-export function ListView({ gh, storage, onLoaded }: ListProps) {
+export function ListView({ gh, storage, resolved }: ListProps) {
   const [listing, setListing] = useState<ListingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadListing(gh, storage)
-      .then((l) => {
-        setListing(l);
-        onLoaded();
-      })
+    loadListing(gh, storage, resolved)
+      .then(setListing)
       .catch((e) => setError(String(e instanceof Error ? e.message : e)));
-  }, [gh]);
+  }, [gh, resolved]);
 
   if (error) return <p class="banner error">Could not load your posts: {error}</p>;
   if (!listing) return <p>Loading your posts…</p>;

@@ -75,36 +75,64 @@ describe('request helper', () => {
           ? json({ data: null, errors: [{ message: 'Bad credentials' }] })
           : undefined,
     ]);
-    await expect(client(fetchImpl as typeof fetch).listEntries()).rejects.toThrow(
-      /Bad credentials/,
-    );
+    await expect(
+      client(fetchImpl as typeof fetch).queryPaths({ branch: 'main', dirs: ['_posts'] }),
+    ).rejects.toThrow(/Bad credentials/);
   });
 });
 
-describe('listing', () => {
-  it('returns posts and drafts from the two aliases', async () => {
-    const { fetchImpl } = fake([
+describe('queryPaths', () => {
+  it('reads trees and files at the named branch, keyed by the path asked for', async () => {
+    const { calls, fetchImpl } = fake([
       () =>
         json({
           data: {
             repository: {
-              posts: { entries: [{ name: '2026-07-01-a.md', oid: 'oid-a' }] },
-              drafts: { entries: [{ name: 'wip.md', oid: 'oid-w' }] },
+              d0: { entries: [{ name: '2026-07-01-a.md', oid: 'oid-a' }] },
+              d1: { entries: [{ name: 'wip.md', oid: 'oid-w' }] },
+              f0: { text: 'title: Site', isTruncated: false },
             },
           },
         }),
     ]);
-    const listing = await client(fetchImpl as typeof fetch).listEntries();
-    expect(listing.posts).toEqual([{ name: '2026-07-01-a.md', oid: 'oid-a' }]);
-    expect(listing.drafts).toEqual([{ name: 'wip.md', oid: 'oid-w' }]);
+    const r = await client(fetchImpl as typeof fetch).queryPaths({
+      branch: 'gh-pages',
+      dirs: ['docs/_posts', 'docs/_drafts'],
+      files: ['docs/_config.yml'],
+    });
+    expect(r.dirs.get('docs/_posts')).toEqual([{ name: '2026-07-01-a.md', oid: 'oid-a' }]);
+    expect(r.dirs.get('docs/_drafts')).toEqual([{ name: 'wip.md', oid: 'oid-w' }]);
+    expect(r.files.get('docs/_config.yml')).toBe('title: Site');
+    // The branch is in the expression, not `HEAD`: #17's other half is that
+    // Pages may build a branch that is not the repo default.
+    expect(String((calls[0]!.body as { query: string }).query)).toContain('"gh-pages:docs/_posts"');
   });
 
-  it('a missing _drafts directory is normal, not an error', async () => {
+  it('a missing path is null, not an error — a site with no _drafts is ordinary', async () => {
+    const { fetchImpl } = fake([() => json({ data: { repository: { d0: null } } })]);
+    const r = await client(fetchImpl as typeof fetch).queryPaths({
+      branch: 'main',
+      dirs: ['_drafts'],
+    });
+    expect(r.dirs.get('_drafts')).toBeNull();
+  });
+
+  it('reports a truncated file as absent rather than handing back half of it', async () => {
     const { fetchImpl } = fake([
-      () => json({ data: { repository: { posts: { entries: [] }, drafts: null } } }),
+      () => json({ data: { repository: { f0: { text: 'collections_di', isTruncated: true } } } }),
     ]);
-    const listing = await client(fetchImpl as typeof fetch).listEntries();
-    expect(listing.drafts).toEqual([]);
+    const r = await client(fetchImpl as typeof fetch).queryPaths({
+      branch: 'main',
+      files: ['_config.yml'],
+    });
+    expect(r.files.get('_config.yml')).toBeNull();
+  });
+
+  it('makes no request when nothing was asked for', async () => {
+    const { calls, fetchImpl } = fake([]);
+    const r = await client(fetchImpl as typeof fetch).queryPaths({ branch: 'main' });
+    expect(calls).toEqual([]);
+    expect(r.dirs.size).toBe(0);
   });
 
   it('fetches blobs by oid aliases and reports binary ones', async () => {
@@ -229,16 +257,35 @@ describe('atomic commit (Git Data)', () => {
 });
 
 describe('pages and deployments', () => {
-  it('getPages returns null on 404 (Pages not configured)', async () => {
+  // A 404 here means "Pages is off" OR "private repo, token has no Pages:read".
+  // The client cannot tell them apart, so it reports absence and leaves the
+  // distinction to a caller holding `private` (#17).
+  it('getPages returns null on 404', async () => {
     const { fetchImpl } = fake([() => json({ message: 'Not Found' }, 404)]);
     expect(await client(fetchImpl as typeof fetch).getPages()).toBeNull();
   });
 
-  it('getPages returns the config when Pages is on', async () => {
-    const { fetchImpl } = fake([() => json({ html_url: 'https://o.github.io/site/', status: 'built' })]);
-    expect((await client(fetchImpl as typeof fetch).getPages())!.html_url).toBe(
-      'https://o.github.io/site/',
-    );
+  it('getPages keeps source and build_type — the fields #17 was thrown by', async () => {
+    const { fetchImpl } = fake([
+      () =>
+        json({
+          html_url: 'https://o.github.io/site/',
+          status: 'built',
+          build_type: 'legacy',
+          source: { branch: 'gh-pages', path: '/docs' },
+        }),
+    ]);
+    const pages = (await client(fetchImpl as typeof fetch).getPages())!;
+    expect(pages.source).toEqual({ branch: 'gh-pages', path: '/docs' });
+    expect(pages.build_type).toBe('legacy');
+  });
+
+  it('getRepo is fetched once and reused — both fields are read on every load', async () => {
+    const { calls, fetchImpl } = fake([() => json({ default_branch: 'main', private: false })]);
+    const c = client(fetchImpl as typeof fetch);
+    await c.getRepo();
+    await c.getDefaultBranch();
+    expect(calls.length).toBe(1);
   });
 
   it('finds the github-pages deployment for a sha and reads its statuses', async () => {
