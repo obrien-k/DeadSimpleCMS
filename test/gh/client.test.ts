@@ -333,6 +333,79 @@ describe('atomic commit (Git Data)', () => {
   });
 });
 
+describe('build outcome (#9): the check-run is the truth, not the deployment', () => {
+  const SHA = 'abc123';
+  it('reports a failed build from the "build" check-run conclusion', async () => {
+    const { fetchImpl } = fake([
+      (c) =>
+        c.url.includes(`/commits/${SHA}/check-runs`)
+          ? json({
+              check_runs: [
+                { name: 'deploy', status: 'completed', conclusion: 'skipped' },
+                { name: 'build', status: 'completed', conclusion: 'failure' },
+              ],
+            })
+          : undefined,
+    ]);
+    expect(await client(fetchImpl as typeof fetch).getBuildState(SHA)).toEqual({
+      status: 'completed',
+      conclusion: 'failure',
+    });
+  });
+
+  it('reports success, and maps in-progress builds to a pending state', async () => {
+    const inProgress = fake([
+      (c) =>
+        c.url.includes('/check-runs')
+          ? json({ check_runs: [{ name: 'build', status: 'in_progress', conclusion: null }] })
+          : undefined,
+    ]);
+    expect(await client(inProgress.fetchImpl as typeof fetch).getBuildState(SHA)).toEqual({
+      status: 'in_progress',
+      conclusion: null,
+    });
+  });
+
+  // Before the workflow registers, there is no "build" check-run at all — that
+  // is "not started yet", never "failed".
+  it('reports none when the build check-run has not appeared', async () => {
+    const { fetchImpl } = fake([
+      (c) => (c.url.includes('/check-runs') ? json({ check_runs: [] }) : undefined),
+    ]);
+    expect(await client(fetchImpl as typeof fetch).getBuildState(SHA)).toEqual({
+      status: 'none',
+      conclusion: null,
+    });
+  });
+
+  // The log lives behind runs → jobs → a 302 to plaintext. Only fetched on
+  // failure, so the three hops cost nothing on the happy path.
+  it('fetches the build job log as plaintext through runs and jobs', async () => {
+    const { fetchImpl } = fake([
+      (c) =>
+        c.url.includes('/actions/runs?') && c.url.includes(SHA)
+          ? json({ workflow_runs: [{ id: 99, name: 'pages build and deployment' }] })
+          : undefined,
+      (c) =>
+        c.url.includes('/actions/runs/99/jobs')
+          ? json({ jobs: [{ id: 5, name: 'build' }, { id: 6, name: 'deploy' }] })
+          : undefined,
+      (c) =>
+        c.url.includes('/actions/jobs/5/logs')
+          ? new Response('Liquid Exception: boom in /github/workspace/_posts/x.md', { status: 200 })
+          : undefined,
+    ]);
+    expect(await client(fetchImpl as typeof fetch).getBuildLog(SHA)).toContain('Liquid Exception');
+  });
+
+  it('returns null rather than throwing when the log cannot be found', async () => {
+    const { fetchImpl } = fake([
+      (c) => (c.url.includes('/actions/runs?') ? json({ workflow_runs: [] }) : undefined),
+    ]);
+    expect(await client(fetchImpl as typeof fetch).getBuildLog(SHA)).toBeNull();
+  });
+});
+
 describe('pages and deployments', () => {
   // A 404 here means "Pages is off" OR "private repo, token has no Pages:read".
   // The client cannot tell them apart, so it reports absence and leaves the

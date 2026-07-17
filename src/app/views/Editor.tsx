@@ -355,7 +355,7 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
         expectedHeadSha: headAtOpen ?? undefined,
       });
       setPendingImages([]);
-      onPublished({ sha, slug, front: read(next)?.data ?? {} });
+      onPublished({ sha, slug, path: to, front: read(next)?.data ?? {} });
       return null;
     });
 

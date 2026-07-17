@@ -6,6 +6,8 @@ import { describeEvent } from '../messages.js';
 export interface PublishTarget {
   sha: string;
   slug: string;
+  /** The published file's path — attributes a build failure to this post (#9). */
+  path: string;
   front: Record<string, unknown>;
 }
 

@@ -1,22 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { trackPublish, type FinishLineEvent } from '../../src/finishline/index.js';
-import type { Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../../src/gh/index.js';
+import type { BuildState, Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../../src/gh/index.js';
 
 const SITE = 'https://kyle.example.com/blog/';
 
 interface FakeOpts {
   pages?: PagesInfo | null;
   private?: boolean;
+  build?: BuildState[]; // per-poll build check-run states (defaults to one success)
+  buildLog?: string | null; // what getBuildLog returns on failure
   deploymentAfter?: number; // polls before the deployment appears
-  statuses?: string[][]; // per-poll status lists (newest first), last entry may carry success
   sitemap?: string | null; // null = 404
   liveUrls?: string[];
 }
 
 function fakes(opts: FakeOpts) {
   let deploymentPolls = 0;
-  let statusPolls = 0;
-  const statuses = opts.statuses ?? [['success']];
+  let buildPolls = 0;
+  const build = opts.build ?? [{ status: 'completed', conclusion: 'success' }];
   const gh = {
     getPages: async () =>
       'pages' in opts ? opts.pages! : ({ html_url: SITE, status: 'built' } as PagesInfo),
@@ -24,14 +25,16 @@ function fakes(opts: FakeOpts) {
       default_branch: 'main',
       private: opts.private ?? false,
     }),
+    getBuildState: async (): Promise<BuildState> =>
+      build[Math.min(buildPolls++, build.length - 1)]!,
+    getBuildLog: async (): Promise<string | null> => opts.buildLog ?? null,
     getDeployment: async (): Promise<Deployment | null> =>
       ++deploymentPolls > (opts.deploymentAfter ?? 0)
         ? { id: 7, sha: 's', environment: 'github-pages' }
         : null,
-    getDeploymentStatuses: async (): Promise<DeploymentStatus[]> => {
-      const states = statuses[Math.min(statusPolls++, statuses.length - 1)]!;
-      return states.map((state) => ({ state, environment_url: SITE.replace(/\/$/, '') }));
-    },
+    getDeploymentStatuses: async (): Promise<DeploymentStatus[]> => [
+      { state: 'success', environment_url: SITE.replace(/\/$/, '') },
+    ],
   };
   const fetchSite = async (input: string | URL): Promise<Response> => {
     const url = String(input);
@@ -77,7 +80,11 @@ describe('trackPublish', () => {
     const url = `${SITE}2026/07/01/my-post.html`;
     const f = fakes({
       deploymentAfter: 1,
-      statuses: [['queued'], ['in_progress'], ['success']],
+      build: [
+        { status: 'queued', conclusion: null },
+        { status: 'in_progress', conclusion: null },
+        { status: 'completed', conclusion: 'success' },
+      ],
       sitemap: sitemapWith(`${SITE}index.html`, url),
       liveUrls: [url],
     });
@@ -90,8 +97,35 @@ describe('trackPublish', () => {
     ]);
   });
 
-  it('a failed build is reported honestly, no guessing', async () => {
-    const f = fakes({ statuses: [['failure']] });
+  const FAILED: BuildState[] = [{ status: 'completed', conclusion: 'failure' }];
+  const LIQUID = (path: string) =>
+    `Liquid Exception: Liquid syntax error (line 2): 'if' tag was never closed in /github/workspace/${path}`;
+
+  // The design's aspiration, now reachable: the log named the file just
+  // published, so the failure is safely attributable to this post (#9).
+  it('a failed build that blames the published post is attributed to it', async () => {
+    const path = '_posts/2026-07-01-my-post.md';
+    const f = fakes({ build: FAILED, buildLog: LIQUID(path) });
+    const events = await drain(trackPublish({ ...f, now: NOW }, { ...TARGET, path }));
+    expect(events.at(-1)).toEqual({
+      kind: 'build-failed',
+      cause: { file: path, line: 2, problem: expect.stringContaining("'if' tag was never closed"), mine: true },
+    });
+  });
+
+  // The break is in a file the user did not touch (a theme). Blaming their post
+  // would send them hunting for a mistake they did not make — so mine:false.
+  it('a failed build in someone else’s file is not blamed on the post', async () => {
+    const f = fakes({ build: FAILED, buildLog: LIQUID('_layouts/default.html') });
+    const events = await drain(
+      trackPublish({ ...f, now: NOW }, { ...TARGET, path: '_posts/2026-07-01-my-post.md' }),
+    );
+    expect(events.at(-1)).toMatchObject({ kind: 'build-failed', cause: { mine: false } });
+  });
+
+  // No parseable error in the log: the honest floor, no cause at all.
+  it('a failed build with no readable cause falls back to the bare failure', async () => {
+    const f = fakes({ build: FAILED, buildLog: 'just build chatter, nothing quotable' });
     const events = await drain(trackPublish({ ...f, now: NOW }, TARGET));
     expect(events.at(-1)).toEqual({ kind: 'build-failed' });
   });

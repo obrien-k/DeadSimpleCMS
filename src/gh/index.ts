@@ -74,6 +74,13 @@ export interface CommitInput {
   branch?: string;
 }
 
+// #9: a build's outcome from its check-run. `none` = no build run registered
+// yet; `neutral` = completed but not a pass/fail we act on (skipped/stale).
+export interface BuildState {
+  status: 'none' | 'queued' | 'in_progress' | 'completed';
+  conclusion: 'success' | 'failure' | 'neutral' | null;
+}
+
 export interface Deployment {
   id: number;
   sha: string;
@@ -380,6 +387,58 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
 
     getDeploymentStatuses(id: number): Promise<DeploymentStatus[]> {
       return rest<DeploymentStatus[]>('GET', `/repos/${repo}/deployments/${id}/statuses`);
+    },
+
+    // #9: the build's outcome, from the `build` check-run — the ONE signal that
+    // reports a red build. A failed Pages build never deploys, so the
+    // Deployments API shows nothing to fail; `pages/builds/latest` sticks at
+    // "building" forever. The check-run is the truth. `none` = the workflow has
+    // not registered a build run yet, which is "not started", never "failed".
+    async getBuildState(sha: string): Promise<BuildState> {
+      const { check_runs } = await rest<{
+        check_runs: { name: string; status: string; conclusion: string | null }[];
+      }>('GET', `/repos/${repo}/commits/${sha}/check-runs`);
+      const build = check_runs.find((c) => c.name === 'build');
+      if (!build) return { status: 'none', conclusion: null };
+      const status = build.status === 'completed' ? 'completed' : build.status === 'queued' ? 'queued' : 'in_progress';
+      let conclusion: BuildState['conclusion'] = null;
+      if (build.status === 'completed') {
+        conclusion = build.conclusion === 'success' ? 'success'
+          : ['failure', 'cancelled', 'timed_out', 'action_required'].includes(build.conclusion ?? '')
+            ? 'failure' : 'neutral';
+      }
+      return { status, conclusion };
+    },
+
+    // The raw build log — the only complete error source (#9), behind three
+    // hops (runs → jobs → a 302 to plaintext). Best-effort: any gap returns
+    // null so the caller falls back to the honest "it failed" floor rather than
+    // throwing. Only called on a known failure, so the hops never touch the
+    // happy path.
+    async getBuildLog(sha: string): Promise<string | null> {
+      try {
+        const runs = await rest<{ workflow_runs: { id: number; name: string }[] }>(
+          'GET',
+          `/repos/${repo}/actions/runs?head_sha=${sha}`,
+        );
+        const run = runs.workflow_runs.find((r) => /pages build and deployment/i.test(r.name))
+          ?? runs.workflow_runs[0];
+        if (!run) return null;
+        const jobs = await rest<{ jobs: { id: number; name: string }[] }>(
+          'GET',
+          `/repos/${repo}/actions/runs/${run.id}/jobs`,
+        );
+        const build = jobs.jobs.find((j) => j.name === 'build');
+        if (!build) return null;
+        // Plaintext, via a 302 fetch follows by default — not rest(), which
+        // JSON-parses.
+        const res = await fetchImpl(`${API}/repos/${repo}/actions/jobs/${build.id}/logs`, {
+          headers: { Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
+        });
+        return res.ok ? await res.text() : null;
+      } catch {
+        return null;
+      }
     },
 
     // First-use writability probe: a dangling blob referenced by no tree, so

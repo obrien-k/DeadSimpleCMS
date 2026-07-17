@@ -40,8 +40,20 @@ export function describeEvent(e: FinishLineEvent): string {
       return 'Publishing…';
     case 'building':
       return e.state === 'in_progress' ? 'Building your site…' : 'Waiting for the build to start…';
-    case 'build-failed':
+    case 'build-failed': {
+      // #9: blame the post only when the build log named the file just
+      // published. A cause that is not theirs, or no readable cause, both fall
+      // to the honest floor — a wrong file sends a git-averse writer hunting for
+      // a mistake they did not make.
+      if (e.cause?.mine) {
+        const where = e.cause.line ? ` (around line ${e.cause.line})` : '';
+        return `This post stopped the site from building${where}. The problem: ${e.cause.problem}. This is almost always template code — text with {% … %} or {{ … }} in it. To keep it as plain text, wrap it in {% raw %} … {% endraw %}; otherwise remove it. Your previous posts are still live and unaffected.`;
+      }
+      if (e.cause) {
+        return `The site build failed, but not because of this post — the problem is in “${e.cause.file}”, which this edit did not change. Your post is saved and your previous posts are still live. This usually needs fixing on GitHub, or you can undo this change.`;
+      }
       return 'The site build failed, so this post is not live. Your previous posts are unaffected. Check the build details on GitHub, or undo this change and try again.';
+    }
     case 'live':
       return `Your post is live!`;
     case 'live-unverified':
