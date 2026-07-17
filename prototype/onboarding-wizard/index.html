@@ -1,0 +1,356 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Onboarding wizard flow for #29.
+  Answers: does the signed-off step sequence feel right when walked, and do the
+  four #8 collision screens + preflight blocks read correctly?
+
+  NOT the real installer. Network is faked; the "scenario" bar at the bottom
+  seeds what GitHub would answer so every branch is reachable without a live
+  repo. Copy is lifted verbatim from src/app/messages.ts and src/app/token.ts
+  where those strings already exist, so we react to the real voice.
+
+  Run: open this file in a browser, or `python3 -m http.server` in this dir.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeadSimpleCMS installer — PROTOTYPE</title>
+    <style>
+      /* Lifted from admin/index.html so the prototype reads like the app. */
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 46rem; padding: 1rem 1rem 6rem; }
+      h1 { margin-bottom: 0.2rem; }
+      label { display: block; margin: 0.75rem 0; }
+      input { width: 100%; font: inherit; padding: 0.4rem; box-sizing: border-box; }
+      button, .button { font: inherit; padding: 0.4rem 1rem; cursor: pointer; }
+      button + button { margin-left: 0.5rem; }
+      .banner { padding: 0.6rem; background: #fffbe6; border: 1px solid #e6d87a; margin: 0.75rem 0; }
+      .banner.error { background: #fdeaea; border-color: #e08c8c; }
+      .banner.ok { background: #eafaea; border-color: #8cc98c; }
+      .note { font-size: 0.85rem; color: #666; }
+      .callout { padding: 0.6rem; background: #eaf3fd; border: 1px solid #8cb8e0; margin: 0.75rem 0; }
+      .steps { display: flex; gap: 0.5rem; list-style: none; padding: 0; margin: 0 0 1.5rem; font-size: 0.8rem; flex-wrap: wrap; }
+      .steps li { color: #aaa; }
+      .steps li.at { color: #111; font-weight: 600; }
+      .steps li.done { color: #4a8a4a; }
+      .steps li.done::before { content: "✓ "; }
+      .live { font-size: 1.1rem; }
+      code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; }
+      /* Scenario bar — high-contrast, obviously not part of the design. */
+      #bar { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+             background: #1a1a2e; color: #fff; border-radius: 2rem; padding: 0.4rem 0.6rem;
+             display: flex; align-items: center; gap: 0.5rem; box-shadow: 0 4px 16px rgba(0,0,0,.3); font-size: 0.85rem; }
+      #bar button { background: #333; color: #fff; border: none; border-radius: 1rem; padding: 0.3rem 0.7rem; }
+      #bar .lbl { min-width: 20rem; text-align: center; }
+      #bar .lbl b { color: #ffd479; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="bar">
+      <button onclick="cycle(-1)">←</button>
+      <span class="lbl" id="barlbl"></span>
+      <button onclick="cycle(1)">→</button>
+    </div>
+
+    <script>
+      // ---- Verbatim strings from the real app (src/app/messages.ts) ----
+      const MSG = {
+        classicToken:
+          'That looks like a classic token (it starts with “ghp_”). Classic tokens always have access to every repository in your account, which is far more than this site needs. Please create a fine-grained token instead — the link below sets one up.',
+        emptyToken: 'Paste a token to continue.',
+        probeFailed:
+          'GitHub did not accept the token for this repository. This usually means one of: the token was scoped to a different repository, no repository was chosen in the “Repository access” dropdown, or “Contents” access was not set to “Read and write”. Create the token again with only this site’s repository selected.',
+        insecure:
+          'This admin page is not being served over HTTPS, so it is not safe to use — a token entered here could be stolen. In your repository settings, open “Pages” and turn on “Enforce HTTPS” (it may take a while to become available), then reload.',
+        noPages:
+          'This repository does not have GitHub Pages turned on, so nothing can go live yet. In your repository settings, open “Pages” and choose a branch to publish from.',
+        dropdownCallout: (repo) =>
+          `On the token page, under “Repository access”, choose ONLY ${repo}. That dropdown is the one thing keeping this token limited to your site.`,
+        expiryWarning: (days) =>
+          `Your GitHub token expires in ${days} day${days === 1 ? '' : 's'}. Create a new one soon, or publishing will stop working.`,
+      };
+
+      // Verbatim from src/app/token.ts — the pre-filled fine-grained PAT form.
+      function tokenTemplateUrl(owner) {
+        const p = new URLSearchParams({
+          name: 'DeadSimpleCMS',
+          description: 'Lets DeadSimpleCMS publish posts to your site',
+          target_name: owner, expires_in: '366',
+          contents: 'write', actions: 'read', pages: 'read',
+        });
+        return `https://github.com/settings/personal-access-tokens/new?${p}`;
+      }
+
+      // ---- Scenarios: seed what "GitHub" answers so every branch is walkable.
+      // These are what the user flips through — the states that make the flow
+      // branch, NOT visual variants. Each names the screen it exists to show.
+      const SCENARIOS = [
+        { key: 'clean',      name: 'Happy path — empty repo, Pages on, HTTPS on',
+          reachable: true, pages: true, https: true, collision: 'none', tokenExpiryDays: 366 },
+        { key: 'expiry',     name: 'Token expires soon — non-blocking warning',
+          reachable: true, pages: true, https: true, collision: 'none', tokenExpiryDays: 6 },
+        { key: 'unreachable',name: 'Preflight: repo unreachable (wrong repo / unscoped token)',
+          reachable: false, pages: true, https: true, collision: 'none', tokenExpiryDays: 366 },
+        { key: 'nopages',    name: 'Preflight block: Pages not enabled',
+          reachable: true, pages: false, https: true, collision: 'none', tokenExpiryDays: 366 },
+        { key: 'nohttps',    name: 'Preflight block: Enforce HTTPS off (the default!)',
+          reachable: true, pages: true, https: false, collision: 'none', tokenExpiryDays: 366 },
+        { key: 'ours',       name: '#8 collision: OURS → repair, proceed',
+          reachable: true, pages: true, https: true, collision: 'ours', tokenExpiryDays: 366 },
+        { key: 'ours-moved', name: '#8 collision: OURS but different repo in meta',
+          reachable: true, pages: true, https: true, collision: 'ours-moved', tokenExpiryDays: 366 },
+        { key: 'decap',      name: '#8 collision: DECAP → named, consented replace',
+          reachable: true, pages: true, https: true, collision: 'decap', tokenExpiryDays: 366 },
+        { key: 'unknown-safe',name: '#8 collision: unknown admin/, no file overlap → proceed',
+          reachable: true, pages: true, https: true, collision: 'unknown-safe', tokenExpiryDays: 366 },
+        { key: 'unknown-idx',name: '#8 collision: unknown admin/index.html → REFUSE',
+          reachable: true, pages: true, https: true, collision: 'unknown-idx', tokenExpiryDays: 366 },
+      ];
+
+      let sIdx = 0;
+      const S = () => SCENARIOS[sIdx];
+
+      // ---- Wizard state ----
+      const STEPS = ['Landing', 'Repo', 'Token', 'Preflight', 'Install', 'Live'];
+      let step = 0;
+      let repo = '';
+      let token = '';
+      let installedCollision = 'none'; // recorded at install for the Live copy
+
+      const owner = () => (repo.split('/')[0] || '');
+      const go = (s) => { step = s; render(); };
+
+      // ---- Fake network, seeded by the active scenario ----
+      function tokenFormatError() {
+        const t = token.trim();
+        if (!t) return MSG.emptyToken;
+        if (t.startsWith('ghp_')) return MSG.classicToken;
+        return null;
+      }
+
+      // ---- Render ----
+      const app = () => document.getElementById('app');
+
+      function stepStrip() {
+        return `<ul class="steps">${STEPS.map((s, i) =>
+          `<li class="${i < step ? 'done' : i === step ? 'at' : ''}">${s}</li>`).join('')}</ul>`;
+      }
+
+      function render() {
+        document.getElementById('barlbl').innerHTML =
+          `scenario: <b>${S().name}</b>`;
+        let h = `<h1>DeadSimpleCMS</h1>` + stepStrip();
+
+        if (step === 0) {
+          h += `
+            <p>A tiny CMS for your Jekyll site on GitHub Pages. No server to run,
+               no config file to write. This page installs an editor into your
+               site's repository; after that you write posts from a browser and
+               they go live at your own URL.</p>
+            <p class="note">You'll need: a GitHub repo with a Jekyll site, and two minutes.</p>
+            <button onclick="go(1)">Install into my site →</button>`;
+        }
+
+        else if (step === 1) {
+          h += `
+            <label>Your site repository (owner/name)
+              <input id="repo" value="${repo}" placeholder="you/your-site" />
+            </label>
+            <p class="note">Typed, not picked from a list: a fine-grained token can't
+               list the repositories it's allowed into, so there's no honest dropdown to show.</p>
+            <button onclick="submitRepo()">Continue →</button>`;
+        }
+
+        else if (step === 2) {
+          const own = owner();
+          h += `
+            <p>Create a fine-grained token so this editor can publish to
+               <code>${repo}</code>. The link pre-fills everything it can:</p>
+            <p><a href="${tokenTemplateUrl(own)}" target="_blank" rel="noopener noreferrer">
+               Create a token for this site →</a></p>
+            <p class="callout">${MSG.dropdownCallout(repo)}</p>
+            <label>Paste the token
+              <input id="token" type="password" value="${token}" placeholder="github_pat_…" />
+            </label>
+            <div id="tokerr"></div>
+            <button onclick="submitToken()">Check &amp; continue →</button>`;
+        }
+
+        else if (step === 3) {
+          h += renderPreflight();
+        }
+
+        else if (step === 4) {
+          h += `
+            <p>Ready to write <code>admin/index.html</code> and <code>admin/bundle.js</code>
+               into <code>${repo}</code> in one commit.</p>
+            ${S().tokenExpiryDays <= 30
+              ? `<p class="banner">${MSG.expiryWarning(S().tokenExpiryDays)}</p>` : ''}
+            <button onclick="install()">Install now</button>
+            <button onclick="go(3)">← Back</button>`;
+        }
+
+        else if (step === 5) {
+          const url = `https://${owner()}.github.io/${repo.split('/')[1] || 'site'}/admin/`;
+          let extra = '';
+          if (installedCollision === 'decap')
+            extra = `<p class="note">Your old Decap file <code>admin/config.yml</code> was left
+                     exactly where it was — nothing of yours was deleted. Coming from Decap?
+                     Your posts are untouched, and their fields are read straight from each
+                     post's front matter, so there's no collection config to port.</p>`;
+          if (installedCollision === 'ours' || installedCollision === 'ours-moved')
+            extra = `<p class="note">This was a repair — your existing install was refreshed to
+                     the current version. Your content wasn't touched.</p>`;
+          h += `
+            <p class="banner ok live">✓ Your CMS is live at
+               <a href="#">${url}</a></p>
+            <p>Watching the GitHub Pages build… <b>done.</b> Open the link above to write your first post.</p>
+            ${extra}
+            <button onclick="reset()">↺ Walk it again</button>`;
+        }
+
+        h += stateDump();
+        app().innerHTML = h;
+
+        // Focus/refill inputs after replace
+        if (step === 1) bind('repo', (v) => (repo = v));
+        if (step === 2) bind('token', (v) => (token = v));
+      }
+
+      function renderPreflight() {
+        const s = S();
+        const rows = [];
+        const row = (label, ok, detail) =>
+          rows.push(`<li>${ok ? '✓' : '✕'} <b>${label}</b>${detail ? ' — ' + detail : ''}</li>`);
+
+        // 1. reachability
+        if (!s.reachable) {
+          return `
+            <p>Checking <code>${repo}</code>…</p>
+            <ul>${(row('Repository reachable', false, ''), rows.join(''))}</ul>
+            <p class="banner error">${MSG.probeFailed}</p>
+            <button onclick="go(2)">← Fix the token</button>`;
+        }
+        row('Repository reachable with this token', true, '');
+
+        // 2. HTTPS (block)
+        if (!s.https) {
+          row('Enforce HTTPS', false, 'off');
+          return `<p>Checking <code>${repo}</code>…</p><ul>${rows.join('')}</ul>
+            <p class="banner error">${MSG.insecure}</p>
+            <p class="note">This is the state a fresh custom domain lands in by default while its
+               certificate provisions — not an exotic misconfiguration.</p>
+            <button onclick="recheck()">I turned it on — re-check</button>`;
+        }
+        row('Enforce HTTPS', true, 'on');
+
+        // 3. Pages (block)
+        if (!s.pages) {
+          row('GitHub Pages enabled', false, '');
+          return `<p>Checking <code>${repo}</code>…</p><ul>${rows.join('')}</ul>
+            <p class="banner error">${MSG.noPages}</p>
+            <p class="note">Without Pages there's no live URL — and "live at ✓" is the whole promise.</p>
+            <button onclick="recheck()">I enabled it — re-check</button>`;
+        }
+        row('GitHub Pages enabled', true, '');
+
+        // 4. collision (#8)
+        const c = collisionScreen(s.collision);
+        rows.push(c.row);
+        return `<p>Checking <code>${repo}</code>…</p><ul>${rows.join('')}</ul>${c.body}`;
+      }
+
+      // The #8 behaviour table, made concrete.
+      function collisionScreen(kind) {
+        const proceed = (label) =>
+          `<button onclick="go(4)">${label}</button>`;
+        switch (kind) {
+          case 'none':
+            return { row: `<li>✓ <b>admin/ is clear</b></li>`,
+              body: proceed('Install →') };
+          case 'ours':
+            return { row: `<li>↻ <b>admin/ is a DeadSimpleCMS install</b> — this will repair it</li>`,
+              body: `<p class="callout">This repo already has DeadSimpleCMS installed. Continuing
+                     refreshes <code>admin/index.html</code> and <code>admin/bundle.js</code> to the
+                     current version. Nothing else is touched.</p>${proceed('Repair →')}` };
+          case 'ours-moved':
+            return { row: `<li>↻ <b>admin/ is a DeadSimpleCMS install for another repo</b></li>`,
+              body: `<p class="callout">The installed admin page points at a <em>different</em>
+                     repository. Continuing repoints it at <code>${repo}</code> (and refreshes it).
+                     If this repo was copied from another, that's expected.</p>${proceed('Repair &amp; repoint →')}` };
+          case 'decap':
+            return { row: `<li>⚠ <b>admin/ looks like a Decap CMS install</b></li>`,
+              body: `<p class="banner">This repo has what looks like a Decap CMS install.
+                     Installing will <b>replace <code>admin/index.html</code></b> (Decap's entry page)
+                     and add <code>admin/bundle.js</code>. It will <b>leave <code>admin/config.yml</code>
+                     and everything else alone</b> — nothing of yours is deleted, and the old file
+                     stays in your repository's history.</p>
+                     <p class="note">Coming from Decap? Your posts don't move, and their fields are
+                     read from each post's front matter rather than a config file.</p>
+                     <button onclick="setColl('decap'); go(4)">Replace admin/index.html and install →</button>
+                     <button onclick="reset()">Cancel</button>` };
+          case 'unknown-safe':
+            return { row: `<li>✓ <b>admin/ exists but has no files we'd overwrite</b></li>`,
+              body: `<p class="callout">There's already an <code>admin/</code> folder, but nothing
+                     named <code>index.html</code> or <code>bundle.js</code> — so your files stay put
+                     and we install alongside them.</p>${proceed('Install alongside →')}` };
+          case 'unknown-idx':
+            return { row: `<li>✕ <b>admin/index.html already exists and isn't ours</b></li>`,
+              body: `<p class="banner error">There's already a file at <code>admin/index.html</code>
+                     that DeadSimpleCMS didn't create, and we can't tell what it is — so we won't
+                     overwrite it and risk destroying something you need. Move or remove
+                     <code>admin/index.html</code>, then run the installer again.</p>
+                     <button onclick="reset()">Start over</button>` };
+        }
+      }
+
+      // ---- Actions ----
+      function bind(id, set) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', (e) => set(e.target.value));
+      }
+      function submitRepo() {
+        repo = (document.getElementById('repo').value || '').trim();
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { alert('Repository must look like owner/name.'); return; }
+        go(2);
+      }
+      function submitToken() {
+        token = document.getElementById('token').value || '';
+        const err = tokenFormatError();
+        const box = document.getElementById('tokerr');
+        if (err) { box.innerHTML = `<p class="banner error">${err}</p>`; return; }
+        go(3);
+      }
+      function recheck() { alert('(prototype) Flip the scenario in the bar to a passing one, then re-check.'); render(); }
+      function setColl(k) { installedCollision = k; }
+      function install() {
+        if (S().collision !== 'decap') installedCollision = S().collision;
+        go(5);
+      }
+      function reset() { step = 0; repo = ''; token = ''; installedCollision = 'none'; render(); }
+
+      function cycle(d) {
+        sIdx = (sIdx + d + SCENARIOS.length) % SCENARIOS.length;
+        reset();
+      }
+      document.addEventListener('keydown', (e) => {
+        if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+        if (e.key === 'ArrowLeft') cycle(-1);
+        if (e.key === 'ArrowRight') cycle(1);
+      });
+
+      // Skill rule: surface the state after every action.
+      function stateDump() {
+        const s = S();
+        return `<hr /><p class="note">state — step: <b>${STEPS[step]}</b> ·
+          repo: <b>${repo || '—'}</b> · token: <b>${token ? token.slice(0,12) + '…' : '—'}</b> ·
+          scenario: reachable=${s.reachable} pages=${s.pages} https=${s.https}
+          collision=${s.collision} expiry=${s.tokenExpiryDays}d</p>`;
+      }
+
+      render();
+    </script>
+  </body>
+</html>

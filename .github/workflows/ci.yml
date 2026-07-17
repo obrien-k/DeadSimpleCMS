@@ -21,3 +21,7 @@ jobs:
       - run: pnpm lint:yaml-wrapper
       - run: pnpm build
       - run: pnpm budget
+      # Build the installer site too, so a break in it fails a PR rather than
+      # only surfacing at deploy time. Runs after budget, which needs the
+      # library build's dist/bundle.js that this step then copies in.
+      - run: pnpm build:installer

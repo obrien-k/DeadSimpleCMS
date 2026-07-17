@@ -1,0 +1,33 @@
+<!doctype html>
+<!--
+  DeadSimpleCMS installer — the project's own landing page, hosted on this repo's
+  GitHub Pages. It writes /admin/ into a user's repo via the API once (#3), so
+  the config anchor is correct by construction. Unlike the admin page, this file
+  IS built (Vite, vite.installer.config.ts) — it is our surface, not a user's.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install DeadSimpleCMS</title>
+    <style>
+      /* Shared idiom with admin/index.html so the two surfaces feel like one. */
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 46rem; padding: 1rem; }
+      h1 { margin-bottom: 0.2rem; }
+      label { display: block; margin: 0.75rem 0; }
+      input { width: 100%; font: inherit; padding: 0.4rem; box-sizing: border-box; }
+      button, .button { font: inherit; padding: 0.4rem 1rem; cursor: pointer; }
+      button + button { margin-left: 0.5rem; }
+      .banner { padding: 0.6rem; background: #fffbe6; border: 1px solid #e6d87a; margin: 0.75rem 0; }
+      .banner.error { background: #fdeaea; border-color: #e08c8c; }
+      .banner.ok { background: #eafaea; border-color: #8cc98c; }
+      .note { font-size: 0.85rem; color: #666; }
+      .callout { padding: 0.6rem; background: #eaf3fd; border: 1px solid #8cb8e0; margin: 0.75rem 0; }
+      code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="../src/installer/main.tsx"></script>
+  </body>
+</html>
