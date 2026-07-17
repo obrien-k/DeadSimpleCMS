@@ -5,7 +5,8 @@
 // not managed.
 import type { BlobResult } from '../gh/index.js';
 import type { FoundFile, Resolved } from '../layout/index.js';
-import { read } from '../frontmatter/index.js';
+import { leaves, read } from '../frontmatter/index.js';
+import { RECENT_WINDOW, promote, type Inferred, type KeyShapes } from '../infer/index.js';
 
 export interface PostMeta {
   path: string;
@@ -28,6 +29,11 @@ export interface ListingResult {
   posts: PostMeta[];
   drafts: PostMeta[];
   pages: PageMeta[];
+  /**
+   * Leaf paths this site's recent posts carry, so the post form shows them
+   * (#13). Already ordered — descending frequency, then alphabetical.
+   */
+  inferred: Inferred[];
 }
 
 interface ListingSource {
@@ -53,6 +59,19 @@ interface CacheEntry {
   // self-heals. Nothing to migrate and no key to bump — the entry is a pure
   // function of blob content, so an incomplete one costs exactly one read.
   fm?: boolean;
+  // The blob's editable leaf paths (#13) — what inference counts. Stored here
+  // rather than in a second cache because it is the same pure function of the
+  // same content hash, and two oid-keyed caches can disagree about which blobs
+  // they have seen. Optional on the same terms as `fm`: undefined means "never
+  // asked", so a pre-#13 entry in the recent window re-reads once and self-heals.
+  //
+  // Leaf paths, so `image.path` — never `image`. A key whose shape gets no form
+  // field (a sequence of maps) is absent by construction: `leaves` does not
+  // return it, and counting a key that can never render would only let it pass
+  // the threshold and then show nothing. The shape is stored with the path
+  // because writing `tags: "a, b"` where the site means a list is a silent
+  // change to what Jekyll reads.
+  keys?: KeyShapes;
 }
 
 const POST_NAME = /^(\d{4}-\d{2}-\d{2})-(.+)\.(md|markdown)$/;
@@ -104,11 +123,22 @@ export async function loadListing(
   // of the extra work — the walk itself cost nothing extra.
   const candidates = sourceFiles.filter((f) => layout.pageExts.includes(ext(f.name)));
 
+  // The inference corpus (#13): the most recent posts by filename date, which
+  // costs nothing — the date is already parsed, and no blob is needed to sort.
+  // Drafts are excluded: they are what the convention is being inferred FOR.
+  const recent = entries.posts
+    .map((e) => ({ e, date: parseName(e.name, false).date }))
+    .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+    .slice(0, RECENT_WINDOW)
+    .map((x) => x.e);
+
   // Posts are identified by path shape, so a cached title is the whole answer.
-  // A candidate needs `fm` too, and a pre-#12 entry does not have it.
+  // A candidate needs `fm` too, and a window post needs `keys` — neither of
+  // which a pre-#12/#13 entry has.
   const misses = [
     ...all.filter(({ e }) => !cache[e.oid]).map(({ e }) => e.oid),
     ...candidates.filter((f) => cache[f.oid]?.fm === undefined).map((f) => f.oid),
+    ...recent.filter((e) => cache[e.oid]?.keys === undefined).map((e) => e.oid),
   ];
   if (misses.length > 0) {
     const blobs = await gh.fetchBlobs([...new Set(misses)]);
@@ -117,7 +147,11 @@ export async function loadListing(
       // Binary / truncated blobs degrade to a filename-derived title below, and
       // cannot be shown to have front matter — so they are not pages either.
       const parsed = blob && !blob.isBinary && blob.text ? read(blob.text) : null;
-      cache[oid] = { title: (parsed?.data.title as string | undefined) ?? '', fm: parsed !== null };
+      cache[oid] = {
+        title: (parsed?.data.title as string | undefined) ?? '',
+        fm: parsed !== null,
+        keys: parsed ? Object.fromEntries(leaves(parsed.data).map((l) => [l.path, l.kind])) : {},
+      };
     }
     storage.setItem(CACHE_KEY, JSON.stringify(cache));
   }
@@ -154,5 +188,6 @@ export async function loadListing(
         oid: f.oid,
       }))
       .sort((a, b) => a.path.localeCompare(b.path)),
+    inferred: promote(recent.map((e) => cache[e.oid]?.keys ?? {})),
   };
 }
