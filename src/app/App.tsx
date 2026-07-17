@@ -136,11 +136,16 @@ export function App({ configuredRepo, storage }: AppProps) {
     resolved.layout.basis === 'pages' ? null : (
       <p class="banner warn">{describeAssumedRoot(resolved.layout.basis)}</p>
     );
+  const scanNote =
+    resolved.layout.postsScan === 'root-only' ? (
+      <p class="banner warn">{MSG.treeTruncated}</p>
+    ) : null;
 
   return (
     <main>
       {banner}
       {rootNote}
+      {scanNote}
       {route.view === 'list' && <ListView gh={gh} storage={storage} resolved={resolved} />}
       {(route.view === 'edit' || route.view === 'new') && (
         <EditorView

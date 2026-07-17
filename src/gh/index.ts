@@ -37,6 +37,19 @@ export interface PathResult {
   files: Map<string, string | null>;
 }
 
+/** One path in a whole-repo tree read. `sha` on a blob IS the GraphQL oid, so the oid-keyed cache reads the same either way. */
+export interface TreeFile {
+  path: string;
+  sha: string;
+}
+
+export interface TreeResult {
+  /** Blobs only; directories are implied by the paths. */
+  files: TreeFile[];
+  /** GitHub silently returns a PARTIAL tree above ~100k entries / 7 MB. Ignoring this ships omission with no symptom (#18). */
+  truncated: boolean;
+}
+
 export interface BlobResult {
   text: string | null;
   isBinary: boolean;
@@ -218,6 +231,22 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
         out.files.set(p, b && !b.isTruncated ? (b.text ?? null) : null);
       });
       return out;
+    },
+
+    // Whole-repo paths in one call. Jekyll reads `_posts`/`_drafts` from every
+    // directory at any depth (#18), which no fixed set of aliases can express —
+    // and a GraphQL nesting depth would be a limit we invented, i.e. #17's
+    // silent omission in a new hat. REST spends a different quota (5,000/hr)
+    // than GraphQL's points, so this does not crowd out the blob fetch.
+    async getTree(branch: string): Promise<TreeResult> {
+      const data = await rest<{
+        tree: { path: string; type: string; sha: string }[];
+        truncated?: boolean;
+      }>('GET', `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+      return {
+        files: data.tree.filter((e) => e.type === 'blob').map(({ path, sha }) => ({ path, sha })),
+        truncated: data.truncated === true,
+      };
     },
 
     // Phase-2: cache misses only, blobs addressed directly by oid. Aliased oid

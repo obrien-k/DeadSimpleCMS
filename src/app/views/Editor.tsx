@@ -76,11 +76,11 @@ const withBody = (raw: string, body: string): string => {
 export function EditorView({ gh, layout, path, onPublished }: EditorProps) {
   const isNew = path === null;
   const isDraft = path !== null && layout.draftsDirs.some((d) => path.startsWith(`${d}/`));
-  // New files go to the root-most directory of their kind; the rest of the
-  // array (once `**/_posts` lands) is where Jekyll also *reads*, not where a
-  // writer would expect a new post to appear.
-  const newDraftsDir = layout.draftsDirs[0]!;
-  const newPostsDir = layout.postsDirs[0]!;
+  // postsDirs/draftsDirs are read sets and can be empty — a site with no
+  // `_drafts/` anywhere is ordinary. Writes go through writeBase, which always
+  // resolves to a usable target (#18).
+  const newDraftsDir = `${layout.writeBase ? `${layout.writeBase}/` : ''}_drafts`;
+  const newPostsDir = `${layout.writeBase ? `${layout.writeBase}/` : ''}_posts`;
 
   const [loaded, setLoaded] = useState(!path);
   const [raw, setRaw] = useState('');
