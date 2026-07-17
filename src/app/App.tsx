@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import { createClient, type GhClient } from '../gh/index.js';
 import { LayoutError, resolveLayout, type Resolved } from '../layout/index.js';
 import { parseRoute, type Route } from './router.js';
 import { checkTokenFormat, repoStore, tokenStore } from './token.js';
 import { describeAssumedRoot, MSG } from './messages.js';
 import { Setup } from './views/Setup.js';
+import { RenewLinks } from './views/RenewLinks.js';
 import { ListView } from './views/List.js';
 import { EditorView } from './views/Editor.js';
 import { PublishView, type PublishTarget } from './views/Publish.js';
@@ -23,11 +24,21 @@ export function App({ configuredRepo, storage }: AppProps) {
   const [publishing, setPublishing] = useState<PublishTarget | null>(null);
   const [unpublishing, setUnpublishing] = useState<UnpublishTarget | null>(null);
   const [expiryDays, setExpiryDays] = useState<number | null>(null);
+  // Set when a live call 401s (#30). Holds the last-seen expiry when that date
+  // is already past (→ "expired on <date>"), or null when the 401 struck inside
+  // the token's window (revoked / repo-deselected → generic re-auth copy).
+  const [authExpired, setAuthExpired] = useState<{ at: Date | null } | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [reloads, setReloads] = useState(0);
 
   const repo = configuredRepo ?? promptedRepo;
+
+  // Stable so the client memo below keys only on token/repo. setState is stable,
+  // so the empty dep list is honest.
+  const onAuthError = useCallback((expiry: Date | null) => {
+    setAuthExpired({ at: expiry && expiry.getTime() < Date.now() ? expiry : null });
+  }, []);
 
   useEffect(() => {
     const onHash = () => {
@@ -45,8 +56,8 @@ export function App({ configuredRepo, storage }: AppProps) {
   }, []);
 
   const gh: GhClient | null = useMemo(
-    () => (token && repo ? createClient({ token, repo }) : null),
-    [token, repo],
+    () => (token && repo ? createClient({ token, repo, onAuthError }) : null),
+    [token, repo, onAuthError],
   );
 
   // The token reports its own expiry on every response — warn before the 401.
@@ -82,30 +93,43 @@ export function App({ configuredRepo, storage }: AppProps) {
     };
   }, [gh, reloads]);
 
+  // Shared by first-run and the #30 re-auth screen: validate, probe (a bare
+  // client with no onAuthError, so a bad new token shows probeFailed inline
+  // rather than re-triggering the takeover), then take the token. Clearing
+  // authExpired on success is a no-op at first run and the exit from re-auth.
+  const connect = async (tok: string, rep: string): Promise<string | null> => {
+    const check = checkTokenFormat(tok);
+    if (!check.ok) return check.reason === 'classic' ? MSG.classicToken : MSG.emptyToken;
+    const probe = createClient({ token: tok.trim(), repo: rep });
+    if (!(await probe.probeWrite())) return MSG.probeFailed;
+    tokenStore.set(storage, tok);
+    if (!configuredRepo) {
+      repoStore.set(storage, rep);
+      setPromptedRepo(rep);
+    }
+    setToken(tok.trim());
+    setAuthExpired(null);
+    return null;
+  };
+
+  // The token of an established session went dead: everything is broken, so a
+  // banner over a half-rendered view would lie. Take over with the token form,
+  // pre-scoped to the known repo. Rendered before the first-run check because a
+  // dead token can 401 while gh still exists.
+  if (authExpired && repo) {
+    return <Setup configuredRepo={repo} onSubmit={connect} reauth expiredOn={authExpired.at} />;
+  }
+
   if (!gh || !repo) {
-    return (
-      <Setup
-        configuredRepo={configuredRepo}
-        onSubmit={async (tok, rep) => {
-          const check = checkTokenFormat(tok);
-          if (!check.ok) return check.reason === 'classic' ? MSG.classicToken : MSG.emptyToken;
-          const probe = createClient({ token: tok.trim(), repo: rep });
-          if (!(await probe.probeWrite())) return MSG.probeFailed;
-          tokenStore.set(storage, tok);
-          if (!configuredRepo) {
-            repoStore.set(storage, rep);
-            setPromptedRepo(rep);
-          }
-          setToken(tok.trim());
-          return null;
-        }}
-      />
-    );
+    return <Setup configuredRepo={configuredRepo} onSubmit={connect} />;
   }
 
   const banner =
     expiryDays !== null && expiryDays <= 30 ? (
-      <p class="banner warn">{MSG.expiryWarning(Math.max(expiryDays, 0))}</p>
+      <div class="banner warn">
+        <p>{MSG.expiryWarning(Math.max(expiryDays, 0))}</p>
+        <RenewLinks owner={repo.split('/')[0] ?? ''} />
+      </div>
     ) : null;
 
   if (publishing) {

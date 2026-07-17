@@ -45,3 +45,12 @@ export function tokenTemplateUrl(owner: string): string {
   });
   return `https://github.com/settings/personal-access-tokens/new?${params}`;
 }
+
+// Where a returning user regenerates the token they already made (#30). A
+// fine-grained token can't be deep-linked by id — GitHub doesn't put it in a
+// URL we hold — so this lands them on the list to find "DeadSimpleCMS" and click
+// Regenerate. The payoff over tokenTemplateUrl: the repository selection, the
+// one field the template can't pre-fill, is preserved rather than re-picked.
+export function tokenListUrl(): string {
+  return 'https://github.com/settings/personal-access-tokens';
+}
