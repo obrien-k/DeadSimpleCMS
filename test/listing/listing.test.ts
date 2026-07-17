@@ -34,7 +34,12 @@ const post = (name: string, oid: string, root = '') => at(root ? `${root}/_posts
 const draft = (name: string, oid: string, root = '') =>
   at(root ? `${root}/_drafts` : '_drafts', name, oid);
 
-const resolvedOf = (posts: FoundFile[], drafts: FoundFile[], root = ''): Resolved => ({
+const resolvedOf = (
+  posts: FoundFile[],
+  drafts: FoundFile[],
+  root = '',
+  sourceFiles: FoundFile[] = [],
+): Resolved => ({
   layout: {
     branch: 'main',
     sourceRoot: root,
@@ -43,9 +48,16 @@ const resolvedOf = (posts: FoundFile[], drafts: FoundFile[], root = ''): Resolve
     writeBase: root,
     basis: 'pages',
     postsScan: 'recursive',
+    pageExts: ['markdown', 'mkdown', 'mkdn', 'mkd', 'md', 'html', 'htm'],
   },
   entries: { posts, drafts },
-  sourceFiles: [],
+  sourceFiles,
+});
+
+const file = (path: string, oid: string): FoundFile => ({
+  path,
+  name: path.slice(path.lastIndexOf('/') + 1),
+  oid,
 });
 
 const md = (title: string) => ({
@@ -173,5 +185,131 @@ describe('loadListing', () => {
       resolvedOf([post('2026-07-01-a.md', 'oid-1')], []),
     );
     expect(posts[0]!.title).toBe('A');
+  });
+});
+
+// #12. Every rule asserted here is one the oracle measured against BOTH Jekyll
+// 3.10.0 (what GitHub Pages runs) and 4.4.1 — see test/oracle/.
+const plain = (text: string) => ({ text, isBinary: false, isTruncated: false });
+
+describe('loadListing: pages (#12)', () => {
+  it('front matter decides, not the extension: README.md is not a page', async () => {
+    const gh = fakeGh({
+      'oid-about': md('About Us'),
+      'oid-readme': plain('# Readme\n\nNo front matter here.\n'),
+    });
+    const { pages } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([], [], '', [file('about.md', 'oid-about'), file('README.md', 'oid-readme')]),
+    );
+    expect(pages.map((p) => p.path)).toEqual(['about.md']);
+    expect(pages[0]!.title).toBe('About Us');
+  });
+
+  // The stated blind spot: Jekyll calls a front-matter'd LICENSE a page
+  // (measured). The CMS cannot, because finding it means reading every file in
+  // the repo. It must not be found by accident either — the omission is
+  // deliberate, and MSG.pagesBlindSpot is what makes it honest.
+  it('only considers markdown_ext + html candidates, so an extension-less page is missed', async () => {
+    const gh = fakeGh({ 'oid-lic': md('License'), 'oid-txt': md('Notes') });
+    const { pages } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([], [], '', [file('LICENSE', 'oid-lic'), file('notes.txt', 'oid-txt')]),
+    );
+    expect(pages).toEqual([]);
+    // Never read: not a candidate, so it costs nothing to ignore.
+    expect(gh.calls).toEqual([]);
+  });
+
+  it('honours the site’s own markdown_ext', async () => {
+    const gh = fakeGh({ 'oid-1': md('Custom') });
+    const resolved = resolvedOf([], [], '', [file('about.textile', 'oid-1')]);
+    resolved.layout.pageExts = ['textile', 'html', 'htm'];
+    const { pages } = await loadListing(gh, memStorage(), resolved);
+    expect(pages.map((p) => p.path)).toEqual(['about.textile']);
+  });
+
+  it('a page with front matter but no title falls back to its filename', async () => {
+    const gh = fakeGh({ 'oid-1': plain('---\nlayout: home\n---\n\nHi.\n') });
+    const { pages } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([], [], '', [file('getting-started.md', 'oid-1')]),
+    );
+    expect(pages[0]!.title).toBe('Getting Started');
+  });
+
+  it('caches the negative: a non-page is never re-read', async () => {
+    const storage = memStorage();
+    const first = fakeGh({ 'oid-readme': plain('# Readme\n') });
+    await loadListing(first, storage, resolvedOf([], [], '', [file('README.md', 'oid-readme')]));
+    expect(first.calls).toEqual(['fetchBlobs:oid-readme']);
+
+    const second = fakeGh({ 'oid-readme': plain('# Readme\n') });
+    const { pages } = await loadListing(
+      second,
+      storage,
+      resolvedOf([], [], '', [file('README.md', 'oid-readme')]),
+    );
+    expect(pages).toEqual([]);
+    expect(second.calls).toEqual([]); // the whole point of the fm flag
+  });
+
+  // Entries written before the fm flag existed carry a title and nothing else.
+  // They must not read as "no front matter" — that would silently hide a page.
+  it('re-reads a pre-#12 cache entry once, then self-heals', async () => {
+    const storage = memStorage({
+      'dscms:titles': JSON.stringify({ 'oid-1': { title: 'About Us' } }),
+    });
+    const gh = fakeGh({ 'oid-1': md('About Us') });
+    const { pages } = await loadListing(
+      gh,
+      storage,
+      resolvedOf([], [], '', [file('about.md', 'oid-1')]),
+    );
+    expect(pages.map((p) => p.title)).toEqual(['About Us']);
+    expect(gh.calls).toEqual(['fetchBlobs:oid-1']);
+    expect(JSON.parse(storage.dump()['dscms:titles']!)['oid-1'].fm).toBe(true);
+  });
+
+  it('fetches posts and page candidates in ONE batch', async () => {
+    const gh = fakeGh({ 'oid-p': md('A Post'), 'oid-a': md('About') });
+    await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([post('2026-07-01-a.md', 'oid-p')], [], '', [file('about.md', 'oid-a')]),
+    );
+    expect(gh.calls).toEqual(['fetchBlobs:oid-p,oid-a']);
+  });
+
+  it('sorts by path and carries the resolved root', async () => {
+    const gh = fakeGh({ a: md('Zebra'), b: md('Apple') });
+    const { pages } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([], [], 'docs', [file('docs/about.md', 'a'), file('docs/_pages/x.md', 'b')]),
+    );
+    expect(pages.map((p) => p.path)).toEqual(['docs/_pages/x.md', 'docs/about.md']);
+  });
+
+  // #18's truncated degrade hands over an empty sourceFiles: the walk never
+  // ran, and pages have no canonical directory to fall back to the way posts
+  // do. No pages is the honest answer; MSG.treeTruncated says so out loud.
+  it('lists no pages when the tree was truncated', async () => {
+    const gh = fakeGh({});
+    const { pages } = await loadListing(gh, memStorage(), resolvedOf([], [], '', []));
+    expect(pages).toEqual([]);
+  });
+
+  it('a binary blob is not a page', async () => {
+    const gh = fakeGh({ 'oid-1': { text: null, isBinary: true, isTruncated: false } });
+    const { pages } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([], [], '', [file('image.md', 'oid-1')]),
+    );
+    expect(pages).toEqual([]);
   });
 });

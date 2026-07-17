@@ -54,6 +54,12 @@ export interface Layout {
   basis: LayoutBasis;
   /** 'root-only' when the tree came back truncated, so posts outside the canonical directory could not be looked for (#18). */
   postsScan: 'recursive' | 'root-only';
+  // Extensions a page can have (#12), lower-cased, no dot. Jekyll's real rule
+  // is front matter alone — `LICENSE` with front matter IS a page (measured on
+  // both 3.10 and 4.4.1) — but honouring that means reading every file in the
+  // repo to find out. This is the site's own `markdown_ext` plus html/htm: the
+  // deliberate, stated blind spot (DESIGN.md), not a guess at Jekyll's rule.
+  pageExts: string[];
 }
 
 /** An entry plus the full path it was found at — so no caller rebuilds a path from a directory it had to know. */
@@ -149,6 +155,7 @@ export async function resolveLayout(gh: LayoutSource): Promise<Resolved> {
     writeBase: base,
     basis,
     postsScan: tree.truncated ? 'root-only' : 'recursive',
+    pageExts: readPageExts(config),
   };
 
   if (tree.truncated) return resolveTruncated(gh, layout, base, configText);
@@ -326,3 +333,19 @@ function safeParse(configText: string | null): Record<string, unknown> {
 }
 
 const readString = (v: unknown): string => (typeof v === 'string' ? clean(v) : '');
+
+// `markdown_ext` is a comma-separated string, and its default is identical on
+// 3.10 and 4.4.1 (measured): a site that renames it stops rendering .md, so
+// hardcoding the default would list files Jekyll copies verbatim. html/htm are
+// not in it — Jekyll renders them by way of front matter, not extension — so
+// they are appended rather than read.
+const MARKDOWN_EXT_DEFAULT = 'markdown,mkdown,mkdn,mkd,md';
+
+function readPageExts(config: Record<string, unknown>): string[] {
+  const raw = typeof config.markdown_ext === 'string' ? config.markdown_ext : MARKDOWN_EXT_DEFAULT;
+  const exts = raw
+    .split(',')
+    .map((e) => e.trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean);
+  return [...new Set([...exts, 'html', 'htm'])];
+}

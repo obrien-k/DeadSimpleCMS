@@ -5,6 +5,12 @@
 // `errors` array), so a bare res.ok check would read success from a failure.
 const API = 'https://api.github.com';
 
+/** The largest aliased blob query with evidence behind it: #5 verified 102 on a real site. */
+const BLOB_BATCH = 100;
+
+const chunk = <T>(xs: T[], size: number): T[][] =>
+  Array.from({ length: Math.ceil(xs.length / size) }, (_, i) => xs.slice(i * size, i * size + size));
+
 export class GhError extends Error {
   status: number;
   conflict: boolean;
@@ -253,20 +259,29 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
     // lookups don't count against the node limit (verified to 102 in one query).
     async fetchBlobs(oids: string[]): Promise<Map<string, BlobResult>> {
       if (oids.length === 0) return new Map();
-      const aliases = oids
-        .map(
-          (oid, i) =>
-            `b${i}: object(oid: "${oid}") { ... on Blob { text isBinary isTruncated } }`,
-        )
-        .join('\n');
-      const data = await graphql<{ repository: Record<string, BlobResult | null> }>(
-        `query { repository(owner: "${owner}", name: "${name}") {\n${aliases}\n} }`,
+      // Chunked because the caller's size is no longer bounded by a directory:
+      // #5 verified one aliased query to 102 blobs when the only callers were
+      // _posts and _drafts, but #12's page candidates are every markdown file
+      // under the source root, which a docs-heavy site counts in thousands.
+      // Where an aliased query actually breaks is unmeasured, so this stays at
+      // the size that has evidence behind it rather than probing for the cliff.
+      // Chunks are parallel: cold start costs round trips, not sequence.
+      const batches = await Promise.all(
+        chunk(oids, BLOB_BATCH).map(async (batch) => {
+          const aliases = batch
+            .map(
+              (oid, i) =>
+                `b${i}: object(oid: "${oid}") { ... on Blob { text isBinary isTruncated } }`,
+            )
+            .join('\n');
+          const data = await graphql<{ repository: Record<string, BlobResult | null> }>(
+            `query { repository(owner: "${owner}", name: "${name}") {\n${aliases}\n} }`,
+          );
+          return batch.map((oid, i) => [oid, data.repository[`b${i}`]] as const);
+        }),
       );
       const map = new Map<string, BlobResult>();
-      oids.forEach((oid, i) => {
-        const b = data.repository[`b${i}`];
-        if (b) map.set(oid, b);
-      });
+      for (const [oid, blob] of batches.flat()) if (blob) map.set(oid, blob);
       return map;
     },
 

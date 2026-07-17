@@ -3,6 +3,7 @@ import type { GhClient } from '../../gh/index.js';
 import { loadListing, type ListingResult } from '../../listing/index.js';
 import type { Resolved } from '../../layout/index.js';
 import { editRoute } from '../router.js';
+import { MSG } from '../messages.js';
 
 export interface ListProps {
   gh: GhClient;
@@ -55,6 +56,24 @@ export function ListView({ gh, storage, resolved }: ListProps) {
           ))}
         </ul>
       </section>
+      {/* Pages (#12). No "New page" button: a page's location is a convention
+          only the site knows — `_pages/` on minimal-mistakes, the root
+          elsewhere — and nothing in _config.yml declares it, so any target
+          would be a guess. Absent when the site has none, exactly like Drafts;
+          absent when the tree was truncated, because the walk never ran. */}
+      {listing.pages.length > 0 && (
+        <section>
+          <h2>Pages</h2>
+          <ul>
+            {listing.pages.map((p) => (
+              <li key={p.oid}>
+                <a href={editRoute(p.path)}>{p.title}</a> <small>{p.path}</small>
+              </li>
+            ))}
+          </ul>
+          <p class="note">{MSG.pagesBlindSpot}</p>
+        </section>
+      )}
     </div>
   );
 }
