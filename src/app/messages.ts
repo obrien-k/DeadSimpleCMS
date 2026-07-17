@@ -49,11 +49,18 @@ export function describeEvent(e: FinishLineEvent): string {
         const where = e.cause.line ? ` (around line ${e.cause.line})` : '';
         return `This post stopped the site from building${where}. The problem: ${e.cause.problem}. This is almost always template code — text with {% … %} or {{ … }} in it. To keep it as plain text, wrap it in {% raw %} … {% endraw %}; otherwise remove it. Your previous posts are still live and unaffected.`;
       }
+      // No Undo button in these two branches: the break is not in this post, so
+      // removing it would not turn the site green (#9). Point to where the fix
+      // actually is rather than offer an undo that cannot help.
       if (e.cause) {
-        return `The site build failed, but not because of this post — the problem is in “${e.cause.file}”, which this edit did not change. Your post is saved and your previous posts are still live. This usually needs fixing on GitHub, or you can undo this change.`;
+        return `The site build failed, but not because of this post — the problem is in “${e.cause.file}”, which this edit did not change. Your post is saved and your previous posts are still live. This needs fixing on GitHub.`;
       }
-      return 'The site build failed, so this post is not live. Your previous posts are unaffected. Check the build details on GitHub, or undo this change and try again.';
+      return 'The site build failed, so this post is not live. Your previous posts are unaffected. Check the build details on GitHub to see what went wrong.';
     }
+    case 'reverted':
+      return 'Undone. Your post is back in your drafts, ready to fix, and the site is building again without it.';
+    case 'revert-failed':
+      return 'Your post is back in your drafts, but the site still isn’t building — so the problem was already there, not from this post. It needs fixing on GitHub.';
     case 'live':
       return `Your post is live!`;
     case 'live-unverified':
