@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# What does Jekyll ACTUALLY read? (#17, #18)
+# What does Jekyll ACTUALLY read? (#17, #18, #12)
 #
 # The companion to psych-oracle.rb, and the same rule: the JS side is not an
 # oracle for Jekyll, so `src/layout/`'s fence is only ever as good as a real
@@ -19,9 +19,12 @@
 #   ruby test/oracle/jekyll-layout-oracle.rb            # both versions
 #   ruby test/oracle/jekyll-layout-oracle.rb 3.10.0     # just one
 #
-# Each fixture prints the posts Jekyll read. Compare against the tables in
-# docs/DESIGN.md; a diff there is a fence bug (or a Jekyll release worth knowing
-# about). GitHub Pages' current version: https://pages.github.com/versions/
+# Each fixture prints what Jekyll read: posts (#17, #18) and, for the page
+# fixtures, how it sorted every other file into pages vs static files (#12).
+# Both questions are filters over ONE walk, so they are one oracle over one
+# fixture set. Compare against the tables in docs/DESIGN.md; a diff there is a
+# fence bug (or a Jekyll release worth knowing about).
+# GitHub Pages' current version: https://pages.github.com/versions/
 
 require 'fileutils'
 require 'tmpdir'
@@ -87,26 +90,81 @@ FIXTURES = {
       vendor/bundle/_posts/2026-01-04-vendor-bundle.md
     ],
   },
+  # -- #12: what is a page? -------------------------------------------------
+  # The rule under test: front matter decides, extension is irrelevant. This is
+  # what decision 1's extension heuristic knowingly departs from, so the exact
+  # size of that blind spot has to be visible here rather than asserted.
+  'what is a page: front matter decides, extension is irrelevant' => {
+    config: "\n",
+    files: {
+      'about.md' => "---\ntitle: About\n---\nbody\n",
+      'index.html' => "---\nlayout: home\n---\nbody\n",
+      'contact.markdown' => "---\ntitle: Contact\n---\nbody\n",
+      'README.md' => "# Readme\n\nNo front matter here.\n",
+      'LICENSE' => "---\ntitle: License\n---\nMIT\n",
+      'notes.txt' => "---\ntitle: Notes\n---\ntext\n",
+      'feed.xml' => "---\n---\nfeed\n",
+      'robots.txt' => "---\n---\nrobots\n",
+      'style.css' => "body { color: red }\n",
+      'sub/deep/deep.md' => "---\ntitle: Deep\n---\nbody\n",
+    },
+  },
+  '_pages: invisible by default, re-opened by include: (minimal-mistakes)' => {
+    config: "include:\n  - \"_pages\"\n",
+    files: {
+      '_pages/inc.md' => "---\ntitle: Included\n---\nbody\n",
+      '_hidden/hid.md' => "---\ntitle: Hidden\n---\nbody\n",
+    },
+  },
+  'a collection is a THIRD kind: not a page, not a post' => {
+    config: "collections:\n  portfolio:\n    output: true\n",
+    files: {
+      '_portfolio/w.md' => "---\ntitle: Work\n---\nbody\n",
+      'about.md' => "---\ntitle: About\n---\nbody\n",
+    },
+  },
 }.freeze
 
+# site.pages and site.static_files are the whole of #12's question: Jekyll walks
+# once and sorts everything that is not a collection document into one or the
+# other. `markdown_ext` and the effective `include` are printed because
+# decision 1's extension heuristic is defined in terms of them.
 DUMP = <<~RUBY
   Jekyll::Hooks.register :site, :post_read do |site|
     puts "    effective exclude: \#{site.config['exclude'].inspect}"
+    puts "    effective include: \#{site.config['include'].inspect}"
+    puts "    markdown_ext:      \#{site.config['markdown_ext'].inspect}"
     puts "    collections_path:  \#{site.collections_path.sub(Dir.pwd, '.')}"
     site.posts.docs.each { |d| puts "    READ: \#{d.relative_path}" }
+    site.pages.each { |p| puts "    PAGE:   \#{p.relative_path}" }
+    site.static_files.each { |f| puts "    STATIC: \#{f.relative_path.sub(%r{^/}, '')}" }
+    site.collections.each do |n, c|
+      next if n == 'posts' || c.docs.empty?
+
+      c.docs.each { |d| puts "    COLLECTION[\#{n}]: \#{d.relative_path}" }
+    end
   end
 RUBY
+
+# `files:` is either an array of paths (each gets stock post front matter) or a
+# path => content hash, which is what the page fixtures need: the whole question
+# is which files have front matter and which do not, so they must set it byte by
+# byte rather than inherit a default that would presuppose the answer.
+def write_files(dir, files)
+  entries = files.is_a?(Hash) ? files : files.to_h { |rel| [rel, nil] }
+  entries.each do |rel, content|
+    path = File.join(dir, rel)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, content || "---\ntitle: #{File.basename(rel, '.md')}\n---\nbody\n")
+  end
+end
 
 def build(version, fixture)
   Dir.mktmpdir do |dir|
     File.write(File.join(dir, '_config.yml'), fixture[:config])
     FileUtils.mkdir_p(File.join(dir, '_plugins'))
     File.write(File.join(dir, '_plugins', 'dump.rb'), DUMP)
-    fixture[:files].each do |rel|
-      path = File.join(dir, rel)
-      FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, "---\ntitle: #{File.basename(rel, '.md')}\n---\nbody\n")
-    end
+    write_files(dir, fixture[:files])
     out, status = Open3.capture2e(
       'jekyll', "_#{version}_", 'build', '--drafts', '--quiet', chdir: dir
     )

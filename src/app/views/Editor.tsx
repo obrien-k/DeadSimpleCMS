@@ -113,6 +113,14 @@ export function EditorView({ gh, layout, path, onPublished }: EditorProps) {
     [preview, body],
   );
 
+  // Liquid is a measurable fact about the file, not a category we invented
+  // (#12): the app deliberately does not sort pages into "content" and
+  // "machinery", because Jekyll has no such distinction to read. What it can
+  // honestly say is that `marked` does not know Liquid, so the preview renders
+  // `{% include %}` as literal text — a lie about a file the writer is about to
+  // trust. Homepages are where this bites; they are also legitimately editable.
+  const hasLiquid = useMemo(() => /\{%|\{\{/.test(body), [body]);
+
   const field = (key: keyof Fields, label: string, type = 'text') => (
     <label>
       {label}
@@ -218,6 +226,7 @@ export function EditorView({ gh, layout, path, onPublished }: EditorProps) {
         </div>
       </header>
       {status && <p class="banner">{status}</p>}
+      {hasLiquid && <p class="banner warn">{MSG.liquidPreview}</p>}
       <form onSubmit={(e) => e.preventDefault()}>
         {field('title', 'Title')}
         {field('date', 'Date')}

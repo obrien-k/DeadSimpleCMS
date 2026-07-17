@@ -85,8 +85,25 @@ export const MSG = {
   // did so, not what it left out. Posts outside the usual folder cannot be
   // looked for, and pretending otherwise is the silent omission this all exists
   // to stop.
+  // #18: GitHub returns a partial tree above ~100k files and says only that it
+  // did so, not what it left out.
+  // #12: pages have no canonical folder to fall back to the way posts do, so
+  // there is no honest partial answer — none are listed at all, and the
+  // sentence has to say that rather than let the section vanish quietly.
   treeTruncated:
-    'This repository has too many files for the CMS to search all of it, so only posts in the usual folder are listed. If you keep posts in other folders, they will not appear here.',
+    'This repository has too many files for the CMS to search all of it. Only posts in the usual folder are listed — if you keep posts in other folders, they will not appear here — and your pages cannot be listed at all.',
+  // The stated half of #12's extension blind spot. A file needs a name ending
+  // in .md (or the site's markdown_ext) or .html to be found; Jekyll's real
+  // rule is front matter alone, so a front-matter'd LICENSE is a page the CMS
+  // cannot see. #5 rejected slug-only titles because "the list would lie" — an
+  // omission the user is never told about is the same lie, so it is said here.
+  pagesBlindSpot:
+    'Only files ending in .md or .html are listed as pages. If a page of your site has a different kind of name, you will not see it here — edit it on GitHub instead.',
+  // Liquid is Jekyll's templating language. Nothing edits it here — the file's
+  // bytes round-trip untouched — but `marked` renders `{% … %}` as literal
+  // text, so an un-caveated preview lies about what the page will look like.
+  liquidPreview:
+    'This file uses Jekyll templating ({% … %}), which builds part of the page when your site is published. The preview cannot show it, so it will look wrong here — that is expected. Your text is saved exactly as written; leave the {% … %} parts alone unless you know what they do.',
   noJekyllSite: (root: string) =>
     `No Jekyll site was found in ${
       root === '' ? 'the top level of this repository' : `the “${root}” folder of this repository`

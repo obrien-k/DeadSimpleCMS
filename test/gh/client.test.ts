@@ -180,6 +180,40 @@ describe('queryPaths', () => {
     });
     expect(blobs.get('oid-b')!.isBinary).toBe(true);
   });
+
+  // #12 unbounded the caller: page candidates are every markdown file under the
+  // source root, not the contents of one directory. 100 is the size #5 actually
+  // verified against a real site; where an aliased query breaks is unmeasured,
+  // so the batch stays at the number with evidence behind it.
+  it('splits a large fetch into batches of 100, and re-keys each batch’s aliases', async () => {
+    const oids = Array.from({ length: 250 }, (_, i) => `oid-${i}`);
+    const { calls, fetchImpl } = fake(
+      Array.from({ length: 3 }, () => () =>
+        json({
+          data: {
+            repository: Object.fromEntries(
+              Array.from({ length: 100 }, (_, i) => [
+                `b${i}`,
+                { text: `t${i}`, isBinary: false, isTruncated: false },
+              ]),
+            ),
+          },
+        }),
+      ),
+    );
+    const blobs = await client(fetchImpl as typeof fetch).fetchBlobs(oids);
+    expect(calls).toHaveLength(3);
+
+    // Aliases restart at b0 per batch, so batch 2's b0 must map back to oid-100
+    // rather than oid-0 — getting this wrong would mis-title every listed file.
+    const q = (n: number) => (calls[n]!.body as { query: string }).query;
+    expect(q(0)).toContain('b0: object(oid: "oid-0")');
+    expect(q(1)).toContain('b0: object(oid: "oid-100")');
+    expect(q(2)).toContain('b49: object(oid: "oid-249")');
+    expect(q(2)).not.toContain('b50:'); // the tail is short, not padded
+    expect(blobs.get('oid-100')!.text).toBe('t0');
+    expect(blobs.size).toBe(250);
+  });
 });
 
 describe('single-file read', () => {

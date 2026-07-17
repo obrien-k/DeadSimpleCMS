@@ -68,6 +68,7 @@ describe('resolveLayout', () => {
       writeBase: '',
       basis: 'pages',
       postsScan: 'recursive',
+      pageExts: ['markdown', 'mkdown', 'mkdn', 'mkd', 'md', 'html', 'htm'],
     });
     expect(entries.posts).toEqual([
       { path: '_posts/2026-07-01-a.md', name: '2026-07-01-a.md', oid: 'oid-_posts/2026-07-01-a.md' },
@@ -285,6 +286,27 @@ describe('resolveLayout', () => {
         'assets/logo.png',
         'contact/index.md',
       ]);
+    });
+  });
+
+  // Which extensions can be a page (#12). Jekyll's real rule is front matter
+  // alone, but a site that renames markdown_ext stops rendering .md — so the
+  // default is measured (identical on 3.10 and 4.4.1), never assumed.
+  describe('pageExts', () => {
+    it('defaults to Jekyll’s markdown_ext plus html/htm', async () => {
+      const { gh } = fakeGh({ pages: legacy(), paths: ['_config.yml'], files: { '_config.yml': '' } });
+      const { layout } = await resolveLayout(gh);
+      expect(layout.pageExts).toEqual(['markdown', 'mkdown', 'mkdn', 'mkd', 'md', 'html', 'htm']);
+    });
+
+    it('honours a site that redefines markdown_ext', async () => {
+      const { gh } = fakeGh({
+        pages: legacy(),
+        paths: ['_config.yml'],
+        files: { '_config.yml': 'markdown_ext: "md,textile"\n' },
+      });
+      const { layout } = await resolveLayout(gh);
+      expect(layout.pageExts).toEqual(['md', 'textile', 'html', 'htm']);
     });
   });
 
