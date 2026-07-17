@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import type { GhClient } from '../../gh/index.js';
 import { GhError } from '../../gh/index.js';
@@ -14,6 +14,7 @@ import {
 } from '../../frontmatter/index.js';
 import type { Resolved } from '../../layout/index.js';
 import type { Inferred } from '../../infer/index.js';
+import { downscale, imageDir, imageFilename, insertionMarkdown } from '../../image/index.js';
 import { loadListing } from '../../listing/index.js';
 import { jekyllDate, publishPath, slugify } from '../dates.js';
 import { editRoute } from '../router.js';
@@ -164,6 +165,21 @@ const withBody = (raw: string, body: string): string => {
   return p.open + p.yaml + p.close + body;
 };
 
+/**
+ * Replace [start, end) of `text` with `snippet`, returning the new text and
+ * where the caret should sit after it (end of the snippet). Pure so the
+ * off-by-one that would make a second image insert land inside the first is a
+ * test, not a thing found by hand in the browser.
+ */
+export function spliceText(
+  text: string,
+  start: number,
+  end: number,
+  snippet: string,
+): { text: string; caret: number } {
+  return { text: text.slice(0, start) + snippet + text.slice(end), caret: start + snippet.length };
+}
+
 export function EditorView({ gh, resolved, storage, path, onPublished }: EditorProps) {
   const { layout } = resolved;
   const isNew = path === null;
@@ -186,6 +202,11 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(false);
+  // Uploaded images ride along to the post's next Save so image + post land in
+  // one commit (proved atomic by prototype/git-data-move) — and an abandoned
+  // post commits nothing, leaving no orphan blob in the repo's history (#14).
+  const [pendingImages, setPendingImages] = useState<{ path: string; content: Uint8Array }[]>([]);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     // The corpus comes through the listing's oid-keyed cache, so arriving from
@@ -239,6 +260,48 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
     }
   }
 
+  // Insert text at the textarea's cursor, or append if it is not focused, and
+  // keep the body state and caret in sync so a second insert lands after the
+  // first rather than on top of it.
+  function insertAtCursor(snippet: string) {
+    const ta = bodyRef.current;
+    const start = ta ? ta.selectionStart : body.length;
+    const end = ta ? ta.selectionEnd : body.length;
+    const { text, caret } = spliceText(body, start, end, snippet);
+    setBody(text);
+    if (ta) {
+      requestAnimationFrame(() => {
+        ta.focus();
+        ta.setSelectionRange(caret, caret);
+      });
+    }
+  }
+
+  const onPickImage = (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ''; // let the same file be picked again after a failure
+    if (!file) return;
+    void run(async () => {
+      let out;
+      try {
+        out = await downscale(file);
+      } catch {
+        // createImageBitmap rejects on anything it cannot decode (a PDF, a
+        // renamed .txt). Not an error worth a stack trace to a blogger.
+        return MSG.imageTooLarge(file.name);
+      }
+      const { dir } = imageDir(resolved.sourceFiles);
+      const uniq = Math.random().toString(36).slice(2, 6);
+      const name = imageFilename(file.name, uniq);
+      const path = `${dir}/${name}`;
+      const bytes = new Uint8Array(await out.blob.arrayBuffer());
+      setPendingImages((prev) => [...prev, { path, content: bytes }]);
+      insertAtCursor(insertionMarkdown(dir, name));
+      return MSG.imageInserted;
+    });
+  };
+
   const save = () =>
     run(async () => {
       if (isNew) {
@@ -251,20 +314,23 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
         const draftPath = `${newDraftsDir}/${slug}.md`;
         await gh.commit({
           message: `Draft: ${title || slug}`,
-          changes: [{ path: draftPath, content }],
+          changes: [{ path: draftPath, content }, ...pendingImages],
         });
+        setPendingImages([]);
         location.hash = editRoute(draftPath);
         return 'Draft saved.';
       }
       const edits = diffEdits(fields, original, values);
       let next = Object.keys(edits).length > 0 ? patch(raw, edits) : raw;
       next = withBody(next, body);
-      if (next === raw) return 'Nothing to save.';
+      // Pending images are a reason to save even when the text is unchanged.
+      if (next === raw && pendingImages.length === 0) return 'Nothing to save.';
       await gh.commit({
         message: `Update: ${values.title || path}`,
-        changes: [{ path: path!, content: next }],
+        changes: [{ path: path!, content: next }, ...pendingImages],
         expectedHeadSha: headAtOpen ?? undefined,
       });
+      setPendingImages([]);
       setRaw(next);
       setOriginal(values);
       setHeadAtOpen(await gh.getHeadSha());
@@ -284,10 +350,11 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
       const to = publishPath(slug, date, newPostsDir);
       const { sha } = await gh.commit({
         message: `Publish: ${values.title || slug}`,
-        changes: [{ path: to, content: next }],
+        changes: [{ path: to, content: next }, ...pendingImages],
         deletions: [path!],
         expectedHeadSha: headAtOpen ?? undefined,
       });
+      setPendingImages([]);
       onPublished({ sha, slug, front: read(next)?.data ?? {} });
       return null;
     });
@@ -302,6 +369,16 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
           <button type="button" onClick={() => setPreview(!preview)}>
             {preview ? 'Edit' : 'Preview'}
           </button>
+          <label class="button">
+            Add image
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              disabled={busy || preview}
+              onChange={onPickImage}
+            />
+          </label>
           <button type="button" disabled={busy} onClick={save}>
             Save
           </button>
@@ -332,6 +409,7 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
         <article class="preview" dangerouslySetInnerHTML={{ __html: previewHtml }} />
       ) : (
         <textarea
+          ref={bodyRef}
           value={body}
           onInput={(e) => setBody((e.target as HTMLTextAreaElement).value)}
           placeholder="Write your post in Markdown…"

@@ -1,0 +1,115 @@
+<!doctype html>
+<!--
+  PROTOTYPE harness — the only place the native path actually runs. Loads the
+  ugly fixture (4000x3000, orientation=6, GPS-tagged) through resize.js and
+  reports what came out: dimensions, bytes, whether the rotation was corrected,
+  and whether GPS survived the re-encode.
+
+  Run:  python3 -m http.server 8014   (from this dir)  then open /harness.html
+  Or just drop any phone photo onto the page.
+-->
+<meta charset="utf-8" />
+<title>#14 image pipeline — ugly-case harness</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; }
+  #drop { border: 2px dashed #999; border-radius: 8px; padding: 2rem; text-align: center; color: #666; }
+  #drop.over { border-color: #06c; background: #f0f7ff; }
+  table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+  td, th { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f6f6f6; width: 14rem; }
+  .imgs { display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
+  .imgs figure { margin: 0; }
+  .imgs img { max-width: 20rem; border: 1px solid #ccc; display: block; }
+  figcaption { font-size: 0.8rem; color: #666; }
+  .verdict { font-weight: 600; }
+  .ok { color: #0a0; }
+  .bad { color: #c00; }
+  code { background: #f3f3f3; padding: 0 3px; }
+</style>
+
+<h1>#14 — what happens to a 4 MB phone photo?</h1>
+<p>Loads <code>fixtures/ugly.jpg</code> automatically. Or drop your own photo below.</p>
+<div id="drop">drop a photo here</div>
+<div id="out"></div>
+
+<script type="module">
+  import { downscale } from './resize.js';
+
+  const out = document.getElementById('out');
+  const drop = document.getElementById('drop');
+
+  // Walk JPEG marker segments to answer: does this file carry an APP1/Exif
+  // block, and does that block hold a GPS IFD (tag 0x8825)? A raw byte scan
+  // false-positives — those two bytes occur by chance in 240 kB of entropy —
+  // so parse the segment structure instead.
+  async function exifReport(blob) {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let i = 2; // skip SOI
+    let hasExif = false,
+      hasGps = false;
+    while (i < buf.length - 1 && buf[i] === 0xff) {
+      const marker = buf[i + 1];
+      if (marker === 0xda || marker === 0xd9) break; // scan / end
+      const len = (buf[i + 2] << 8) | buf[i + 3];
+      if (marker === 0xe1 && String.fromCharCode(buf[i + 4], buf[i + 5]) === 'Ex') {
+        hasExif = true;
+        const tiff = buf.slice(i + 10, i + 2 + len);
+        const le = tiff[0] === 0x49;
+        const rd16 = (o) => (le ? tiff[o] | (tiff[o + 1] << 8) : (tiff[o] << 8) | tiff[o + 1]);
+        for (let p = 0; p < tiff.length - 1; p += 2) if (rd16(p) === 0x8825) hasGps = true;
+      }
+      i += 2 + len;
+    }
+    return { hasExif, hasGps };
+  }
+
+  async function run(file) {
+    out.innerHTML = '<p>working…</p>';
+    // No flag — but Chrome auto-orients here anyway, so this is display px, not
+    // stored px. Kept to show that the default already rotates.
+    const inBitmap = await createImageBitmap(file);
+    const inExif = await exifReport(file);
+
+    const t0 = performance.now();
+    const { blob, width, height } = await downscale(file);
+    const ms = (performance.now() - t0).toFixed(0);
+    const outExif = await exifReport(blob);
+
+    // Orientation check: fixture pixels are 4000x3000 (landscape) but display
+    // as portrait via orientation=6. If resize.js honored the flag the output
+    // is taller than wide.
+    const corrected = height > width;
+
+    const inURL = URL.createObjectURL(file);
+    const outURL = URL.createObjectURL(blob);
+
+    out.innerHTML = `
+      <table>
+        <tr><th>input</th><td>${(file.size / 1e6).toFixed(2)} MB — ${inBitmap.width}×${inBitmap.height} display px</td></tr>
+        <tr><th>output</th><td>${(blob.size / 1024).toFixed(0)} kB — ${width}×${height} px — encoded in ${ms} ms</td></tr>
+        <tr><th>shrink factor</th><td>${(file.size / blob.size).toFixed(0)}× smaller</td></tr>
+        <tr><th>orientation honored</th><td class="verdict ${corrected ? 'ok' : 'bad'}">${corrected ? 'YES — output is portrait, EXIF rotation applied' : 'NO — output still landscape, would render sideways'}</td></tr>
+        <tr><th>EXIF in input</th><td>Exif=${inExif.hasExif} · GPS=${inExif.hasGps}</td></tr>
+        <tr><th>EXIF in output</th><td class="verdict ${outExif.hasExif ? 'bad' : 'ok'}">Exif=${outExif.hasExif} · GPS=${outExif.hasGps} — ${outExif.hasExif ? 'metadata SURVIVED' : 'all EXIF (GPS included) stripped by re-encode'}</td></tr>
+      </table>
+      <div class="imgs">
+        <figure><img src="${inURL}" /><figcaption>input (browser auto-rotates preview)</figcaption></figure>
+        <figure><img src="${outURL}" /><figcaption>output of resize.js</figcaption></figure>
+      </div>`;
+  }
+
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('over');
+    if (e.dataTransfer.files[0]) run(e.dataTransfer.files[0]);
+  });
+
+  // Auto-run against the committed fixture.
+  fetch('fixtures/ugly.jpg')
+    .then((r) => (r.ok ? r.blob() : Promise.reject()))
+    .then((b) => run(new File([b], 'ugly.jpg', { type: 'image/jpeg' })))
+    .catch(() => (out.innerHTML = '<p>no fixture — run make-fixture.py, then drop a photo.</p>'));
+</script>

@@ -312,6 +312,25 @@ describe('atomic commit (Git Data)', () => {
     expect(body.encoding).toBe('base64');
     expect(Buffer.from(body.content, 'base64').toString('utf8')).toBe('emoji 🎉 café 日本語');
   });
+
+  // An image is bytes, not text — routing it through TextEncoder would corrupt
+  // it. Binary content is base64'd straight from the Uint8Array (#14).
+  it('base64s binary content directly, without TextEncoder mangling', async () => {
+    const recorded = fake(happyRoutes([]));
+    const c = createClient({ token: 't', repo: 'owner/site', fetch: recorded.fetchImpl as typeof fetch });
+    // Bytes 0xFF 0xD8 — a JPEG SOI marker, invalid UTF-8, so a text path would lose them.
+    const bytes = new Uint8Array([0xff, 0xd8, 0x00, 0x41]);
+    await c.commit({
+      branch: 'main',
+      message: 'm',
+      changes: [{ path: 'assets/img/x.jpg', content: bytes }],
+      expectedHeadSha: HEAD,
+    });
+    const blobCall = recorded.calls.find((x) => x.url.includes('/git/blobs'))!;
+    const body = blobCall.body as { content: string; encoding: string };
+    expect(body.encoding).toBe('base64');
+    expect([...Buffer.from(body.content, 'base64')]).toEqual([0xff, 0xd8, 0x00, 0x41]);
+  });
 });
 
 describe('pages and deployments', () => {

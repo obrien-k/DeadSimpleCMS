@@ -64,7 +64,10 @@ export interface BlobResult {
 
 export interface CommitInput {
   message: string;
-  changes?: { path: string; content: string }[];
+  // A string is UTF-8 text (posts); a Uint8Array is binary (an uploaded image),
+  // base64'd straight rather than pushed through TextEncoder, which would
+  // corrupt any non-UTF-8 byte (#14).
+  changes?: { path: string; content: string | Uint8Array }[];
   deletions?: string[];
   /** HEAD sha read when the file was opened; refuse to write if it moved. */
   expectedHeadSha?: string;
@@ -327,8 +330,9 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
 
       const tree: { path: string; mode: string; type: string; sha: string | null }[] = [];
       for (const { path, content } of changes) {
+        const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
         const blob = await rest<{ sha: string }>('POST', `/repos/${repo}/git/blobs`, {
-          content: bytesToBase64(new TextEncoder().encode(content)),
+          content: bytesToBase64(bytes),
           encoding: 'base64',
         });
         tree.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
