@@ -9,14 +9,43 @@
 //   deployment's environment_url (GitHub stating the site root).
 // - A green build with the post absent from the sitemap means Jekyll
 //   deliberately skipped it; the local front matter says why, no API call.
-import type { Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../gh/index.js';
+import type { BuildState, Deployment, DeploymentStatus, PagesInfo, RepoInfo } from '../gh/index.js';
+
+// What the raw build log blamed, once (#9). The check-run annotation is
+// truncated at 4096 chars and Jekyll's debug log fills that before the error,
+// so the job log is the only complete source — and it carries ANSI colour and
+// per-line timestamps the parser must see through. Only a Liquid *Exception*
+// stops the build; a Warning does not, and blaming one would be a false
+// positive. Non-Liquid errors (a hand-edited YAML break) fall through to null,
+// because they are not reachable through the CMS's own writes.
+export interface BuildCause {
+  /** Repo-relative, with the `/github/workspace/` build root stripped. */
+  file: string;
+  /** The line inside the file, when Jekyll names one. */
+  line?: number;
+  /** Jekyll's own message, e.g. "Liquid syntax error (line 2): 'if' tag was never closed". */
+  problem: string;
+}
+
+export function parseBuildFailure(log: string): BuildCause | null {
+  const clean = log.replace(/\x1b\[[0-9;]*m/g, '');
+  const m = clean.match(/Liquid Exception:\s*(.+?)\s+in\s+(?:\/github\/workspace\/)?(\S+)/);
+  if (!m) return null;
+  const problem = m[1]!.trim();
+  const file = m[2]!.trim();
+  const line = problem.match(/\(line (\d+)\)/);
+  return line ? { file, line: Number(line[1]), problem } : { file, problem };
+}
 
 export type FinishLineEvent =
   | { kind: 'no-pages' }
   | { kind: 'pages-unreadable' }
   | { kind: 'publishing' }
   | { kind: 'building'; state: string }
-  | { kind: 'build-failed' }
+  // A red build (#9). `cause` is present only when the log named a file; `mine`
+  // says whether that file is the one just published — the gate on blaming the
+  // user. No cause, or a cause that isn't theirs, both fall to the honest floor.
+  | { kind: 'build-failed'; cause?: { file: string; line?: number; problem: string; mine: boolean } }
   | { kind: 'live'; url: string }
   | { kind: 'live-unverified'; url: string }
   | { kind: 'skipped'; reason: 'future-dated' | 'unpublished' }
@@ -29,6 +58,8 @@ export interface TrackDeps {
   gh: {
     getPages(): Promise<PagesInfo | null>;
     getRepo(): Promise<RepoInfo>;
+    getBuildState(sha: string): Promise<BuildState>;
+    getBuildLog(sha: string): Promise<string | null>;
     getDeployment(sha: string): Promise<Deployment | null>;
     getDeploymentStatuses(id: number): Promise<DeploymentStatus[]>;
   };
@@ -41,6 +72,8 @@ export interface TrackDeps {
 export interface TrackTarget {
   sha: string;
   slug: string;
+  /** The published file's repo-relative path — the key that attributes a build failure to this post (#9). */
+  path?: string;
   /** The front matter the app just wrote — the local answer to "why skipped?". */
   front: Record<string, unknown>;
 }
@@ -51,8 +84,6 @@ export interface TrackOptions {
   maxStatusPolls?: number;
   sitemapRetries?: number;
 }
-
-const TERMINAL_FAILURE = new Set(['error', 'failure', 'inactive']);
 
 function extractLocs(xml: string): string[] {
   return [...xml.matchAll(/<loc>\s*(.*?)\s*<\/loc>/g)].map((m) => m[1]!);
@@ -105,45 +136,56 @@ export async function* trackPublish(
   }
 
   yield { kind: 'publishing' };
-  let deployment: Deployment | null = null;
-  for (let i = 0; i < maxDeploymentPolls && !deployment; i++) {
-    deployment = await gh.getDeployment(target.sha);
-    if (!deployment) await sleep(pollMs);
+
+  // Build phase (#9). The `build` check-run is the only signal that reports a
+  // red build: a failed build never deploys, so the Deployments API has nothing
+  // to fail and `pages/builds/latest` sticks at "building" forever (both
+  // measured). Poll the check-run to a terminal outcome.
+  let built = false;
+  let lastState = '';
+  for (let i = 0; i < maxStatusPolls; i++) {
+    const build = await gh.getBuildState(target.sha);
+    if (build.conclusion === 'failure') {
+      // Translate only from the raw log, and only blame the user when it names
+      // the file they just published — a wrong file is worse than none (#9).
+      const cause = parseBuildFailure((await gh.getBuildLog(target.sha)) ?? '');
+      if (cause) {
+        yield { kind: 'build-failed', cause: { ...cause, mine: cause.file === target.path } };
+      } else {
+        yield { kind: 'build-failed' };
+      }
+      return;
+    }
+    if (build.status === 'completed') {
+      built = true; // success or neutral — either way, look for the live URL
+      break;
+    }
+    // Dedup on the DISPLAYED state, not the raw status: `none` (no run yet) and
+    // `queued` both read as "waiting to start", and emitting that line twice
+    // looks like a stutter.
+    const shown = build.status === 'in_progress' ? 'in_progress' : 'queued';
+    if (shown !== lastState) {
+      lastState = shown;
+      yield { kind: 'building', state: shown };
+    }
+    await sleep(pollMs);
   }
-  if (!deployment) {
+  if (!built) {
     yield { kind: 'timeout' };
     return;
   }
 
+  // URL phase: a successful build deployed, so the deployment now carries the
+  // site root. It is only needed for that root — the build's outcome is already
+  // known from the check-run above.
   let siteRoot: string | null = null;
-  let lastState = '';
-  let success = false;
-  for (let i = 0; i < maxStatusPolls; i++) {
-    const statuses = await gh.getDeploymentStatuses(deployment.id);
-    const latest = statuses[0];
-    if (latest) {
-      if (latest.environment_url) {
-        siteRoot = latest.environment_url.endsWith('/')
-          ? latest.environment_url
-          : `${latest.environment_url}/`;
-      }
-      if (latest.state === 'success') {
-        success = true;
-        break;
-      }
-      if (TERMINAL_FAILURE.has(latest.state)) {
-        // The honest fallback (#9): say it failed; never guess attribution.
-        yield { kind: 'build-failed' };
-        return;
-      }
-      if (latest.state !== lastState) {
-        lastState = latest.state;
-        yield { kind: 'building', state: latest.state };
-      }
-    }
-    await sleep(pollMs);
+  for (let i = 0; i < maxDeploymentPolls && !siteRoot; i++) {
+    const deployment = await gh.getDeployment(target.sha);
+    const url = deployment ? (await gh.getDeploymentStatuses(deployment.id))[0]?.environment_url : undefined;
+    if (url) siteRoot = url.endsWith('/') ? url : `${url}/`;
+    else await sleep(pollMs);
   }
-  if (!success || !siteRoot) {
+  if (!siteRoot) {
     yield { kind: 'timeout' };
     return;
   }
