@@ -10,8 +10,13 @@ actually protect against concurrent edits?
 
 ## Verdict: yes on every count, with two corrections to the design
 
-Run against `obrien-k/deadsimplecms-scratch` (private, disposable) with a real
-fine-grained PAT created from the template URL in DESIGN.md's auth section.
+Run against `obrien-k/deadsimplecms-scratch` (disposable) with a real fine-grained
+PAT created from the template URL in DESIGN.md's auth section.
+
+> **Correction (2026-07-16):** this originally said the scratch repo was *private*.
+> **It is public.** Nothing above depends on visibility, so the findings stand — but
+> #7 does depend on it (a public repo answers *any* caller, scoped or not), so do not
+> re-read this line as evidence that it was ever private.
 
 **1. The fine-grained PAT reaches the Git Data endpoints.** This was the open
 question the design rested on and it's now closed: `contents: write` covers
