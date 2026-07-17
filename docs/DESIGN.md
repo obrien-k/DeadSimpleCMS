@@ -307,7 +307,9 @@ TypeScript + Preact (~4 kB runtime). No React. Bundle budget ~100 kB gzipped tot
 
 1. **Core loop:** PAT auth → list posts → edit/create → commit → deploy status → verified live link.
 2. **Content comfort:** ~~drafts flow~~ (create/publish in phase 1; ~~delete + unpublish~~ landed in #16), ~~image upload + insertion~~ (landed in #14), ~~front-matter inference~~ (landed in #13), ~~conflict handling~~ (compare-and-choose landed in #15), ~~one-click revert~~ (build-failure translation + Undo landed in #9).
-3. **Onboarding:** setup wizard, PAT-expiry reminders, optional one-file Cloudflare Worker OAuth for teams, data-file editing.
+3. **Onboarding:** ~~setup wizard~~ (landed in #29: an installer hosted on this repo's own GitHub Pages, deployed via Actions; walks repo → guided PAT → preflight → the #8 collision handling → a two-file install commit → a watched build ending on the live link), PAT-expiry reminders, OAuth-for-teams (scoping open — #31), data-file editing (out of scope, see phase-2 map).
+
+*The installer is a second build output of this repo: `vite.config.ts` builds the vendored `/admin/` library bundle; `vite.installer.config.ts` builds the installer site to `dist-site/`, carrying the bundle and the `admin/index.html` template as install payloads. Pages uses **GitHub Actions**, not deploy-from-branch — the installer is TypeScript that must be built, and a branch deploy would run the output through Jekyll.*
 
 *Page **editing** landed early (#12): the list view is the front door and had to know how many kinds of thing it holds before the form-fields work could proceed. Page **creation** is still deferred — see below.*
 

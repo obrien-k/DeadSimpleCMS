@@ -7,6 +7,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "vite build",
+    "build:installer": "vite build --config vite.installer.config.ts",
+    "build:site": "pnpm build && pnpm build:installer",
     "budget": "node scripts/budget.js",
     "lint:yaml-wrapper": "node scripts/lint-yaml-wrapper.js"
   },
