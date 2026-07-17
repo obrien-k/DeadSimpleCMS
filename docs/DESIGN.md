@@ -1,6 +1,6 @@
 # DeadSimpleCMS — Design Document
 
-*Status: design phase. No code exists yet.*
+*Status: phase 1 implemented (`src/`, July 2026). This document is the design record and decision log; the prototype directories it references were deleted once their findings landed — the fixtures and Psych oracle live on in `test/`.*
 
 ## Thesis
 
