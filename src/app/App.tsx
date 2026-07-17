@@ -150,7 +150,8 @@ export function App({ configuredRepo, storage }: AppProps) {
       {(route.view === 'edit' || route.view === 'new') && (
         <EditorView
           gh={gh}
-          layout={resolved.layout}
+          resolved={resolved}
+          storage={storage}
           path={route.view === 'edit' ? route.path : null}
           onPublished={(target) => setPublishing(target)}
         />

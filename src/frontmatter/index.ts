@@ -34,6 +34,45 @@ export const FORM_ORDER = ['title', 'date', 'description', 'tags', 'categories',
 
 export type Edits = Record<string, unknown>;
 
+/**
+ * A front-matter value the form can round-trip (#13). `path` is a dotted leaf
+ * path, the same address `patch` takes.
+ */
+/** 'list' is a sequence of scalars — the CSV widget `tags`/`categories` already use. */
+export type LeafKind = 'scalar' | 'list';
+
+export interface Leaf {
+  path: string;
+  value: unknown;
+  kind: LeafKind;
+}
+
+/**
+ * Every editable leaf in a parsed front-matter mapping, in file order (#13).
+ *
+ * Maps recurse, so `image: {path: /x.png}` yields `image.path` and a scalar
+ * `image:` yields `image` — which is why the form needs no scalar-vs-nested
+ * special case: the file's own shape names the path, and `patch` writes back to
+ * the path it was given.
+ *
+ * A sequence holding anything but scalars (`gallery: [{url: …}]`) yields NO
+ * leaf. This is the stated blind spot: no text widget round-trips it, so the
+ * form cannot show it and `patch` never names it — the key survives untouched
+ * and has to be edited on GitHub. Skipping beats rendering `[object Object]`
+ * over a value the user would then save back.
+ */
+export function leaves(data: Record<string, unknown>, prefix = ''): Leaf[] {
+  const out: Leaf[] = [];
+  for (const [key, value] of Object.entries(data)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isScalarValue(value)) out.push({ path, value, kind: 'scalar' });
+    else if (Array.isArray(value)) {
+      if (value.every(isScalarValue)) out.push({ path, value, kind: 'list' });
+    } else if (isRecord(value)) out.push(...leaves(value, path));
+  }
+  return out;
+}
+
 export interface SplitFile {
   open: string;
   yaml: string;
@@ -239,17 +278,22 @@ export function patch(raw: string, edits: Edits): string {
 
 // Build a brand-new file (the new-draft path). Fields render in form order;
 // empty strings and empty arrays are omitted rather than written as noise.
-export function create(fields: Record<string, unknown>, body: string): string {
-  const lines: string[] = [];
-  const keys = [
-    ...FORM_ORDER.filter((k) => k in fields),
-    ...Object.keys(fields).filter((k) => !FORM_ORDER.includes(k)),
-  ];
-  for (const key of keys) {
-    const value = fields[key];
+//
+// Keys are dotted leaf paths, the same address space `patch` takes (#13), so
+// `image.path` builds nested front matter rather than a key literally named
+// "image.path". A plain key has no dots and expands to itself, which is why the
+// pre-#13 callers are unaffected.
+export function create(fields: Edits, body: string): string {
+  const nested: Record<string, unknown> = {};
+  for (const [path, value] of Object.entries(fields)) {
     if (value == null || value === '' || (Array.isArray(value) && value.length === 0)) continue;
-    lines.push(renderKey(key, value, 2));
+    deepSet(nested, path.split('.'), value);
   }
+  const keys = [
+    ...FORM_ORDER.filter((k) => k in nested),
+    ...Object.keys(nested).filter((k) => !FORM_ORDER.includes(k)),
+  ];
+  const lines = keys.map((key) => renderKey(key, nested[key], 2));
   return `---\n${lines.join('\n')}\n---\n\n${body}`;
 }
 

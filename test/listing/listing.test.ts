@@ -117,7 +117,9 @@ describe('loadListing', () => {
   it('steady state: zero blob fetches', async () => {
     const gh = fakeGh({});
     const storage = memStorage({
-      'dscms:titles': JSON.stringify({ 'oid-1': { title: 'Cached Title' } }),
+      'dscms:titles': JSON.stringify({
+        'oid-1': { title: 'Cached Title', fm: true, keys: { title: 'scalar' } },
+      }),
     });
     const { posts } = await loadListing(
       gh,
@@ -311,5 +313,126 @@ describe('loadListing: pages (#12)', () => {
       resolvedOf([], [], '', [file('image.md', 'oid-1')]),
     );
     expect(pages).toEqual([]);
+  });
+});
+
+// #13. The corpus is the recent window and it rides the same oid-keyed cache as
+// the titles, so a warm cache answers "what do this site's posts carry" with
+// zero requests.
+describe('loadListing: inference corpus (#13)', () => {
+  const withFront = (yaml: string) => plain(`---\n${yaml}\n---\n\nBody.\n`);
+
+  it('promotes a key a majority of recent posts carry', async () => {
+    const gh = fakeGh({
+      'o1': withFront('title: A\nimage:\n  path: /a.png'),
+      'o2': withFront('title: B\nimage:\n  path: /b.png'),
+      'o3': withFront('title: C'),
+    });
+    const { inferred } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf(
+        [
+          post('2026-07-01-a.md', 'o1'),
+          post('2026-07-02-b.md', 'o2'),
+          post('2026-07-03-c.md', 'o3'),
+        ],
+        [],
+      ),
+    );
+    expect(inferred).toContainEqual({ path: 'image.path', kind: 'scalar' });
+  });
+
+  it('stores leaf paths with their shape, so a list is known to be a list', async () => {
+    const gh = fakeGh({ 'o1': withFront('title: A\ntags:\n  - x') });
+    const storage = memStorage();
+    await loadListing(gh, storage, resolvedOf([post('2026-07-01-a.md', 'o1')], []));
+    expect(JSON.parse(storage.dump()['dscms:titles']!)['o1'].keys).toEqual({
+      title: 'scalar',
+      tags: 'list',
+    });
+  });
+
+  // A key that can never render a field must never be counted: promoting it
+  // would let it pass the threshold and then show nothing.
+  it('never stores a key whose shape gets no form field', async () => {
+    const gh = fakeGh({ 'o1': withFront('title: A\ngallery:\n  - url: /1.png') });
+    const storage = memStorage();
+    await loadListing(gh, storage, resolvedOf([post('2026-07-01-a.md', 'o1')], []));
+    expect(JSON.parse(storage.dump()['dscms:titles']!)['o1'].keys).toEqual({ title: 'scalar' });
+  });
+
+  // Conventions drift. The window tracks what the author is doing NOW, which is
+  // what their next post should look like — an all-posts corpus weights a 2015
+  // post equally with last week's and buries a recently-adopted key.
+  const drifted = () => {
+    // 21 posts, oldest first by date. Only the oldest carries `legacy`; the 20
+    // in the window carry `image.path`. Under an all-posts majority `legacy`
+    // loses either way — what the window decides is that it never votes.
+    const posts = Array.from({ length: 21 }, (_, i) =>
+      post(`2026-01-${String(i + 1).padStart(2, '0')}-p.md`, `o${i}`),
+    );
+    const blobs: Record<string, ReturnType<typeof plain>> = {};
+    for (let i = 0; i < 21; i++) {
+      blobs[`o${i}`] = withFront(i === 0 ? 'legacy: yes' : 'image:\n  path: /x.png');
+    }
+    return { posts, blobs };
+  };
+
+  it('samples only the recent window, so the oldest post casts no vote', async () => {
+    const { posts, blobs } = drifted();
+    // Give every post a title but no `keys`: the pre-#13 upgrade path, and the
+    // only state in which the window governs what gets fetched. On a cold cache
+    // every post is read regardless — a title cannot be inferred, only read.
+    const storage = memStorage({
+      'dscms:titles': JSON.stringify(
+        Object.fromEntries(posts.map((p) => [p.oid, { title: 'T', fm: true }])),
+      ),
+    });
+    const gh = fakeGh(blobs);
+    const { inferred } = await loadListing(gh, storage, resolvedOf(posts, []));
+    expect(inferred.map((i) => i.path)).toEqual(['image.path']);
+    expect(gh.calls).toEqual([`fetchBlobs:${Array.from({ length: 20 }, (_, i) => `o${20 - i}`).join(',')}`]);
+  });
+
+  it('a key only the out-of-window post carries is never promoted', async () => {
+    const { posts, blobs } = drifted();
+    const { inferred } = await loadListing(fakeGh(blobs), memStorage(), resolvedOf(posts, []));
+    expect(inferred.map((i) => i.path)).not.toContain('legacy');
+  });
+
+  it('drafts are not corpus — they are what the convention is inferred FOR', async () => {
+    const gh = fakeGh({
+      'o1': withFront('title: A'),
+      'd1': withFront('title: D\nexperimental: yes'),
+    });
+    const { inferred } = await loadListing(
+      gh,
+      memStorage(),
+      resolvedOf([post('2026-07-01-a.md', 'o1')], [draft('d.md', 'd1')]),
+    );
+    expect(inferred.map((i) => i.path)).toEqual(['title']);
+  });
+
+  it('steady state: a warm cache infers with zero blob fetches', async () => {
+    const gh = fakeGh({});
+    const storage = memStorage({
+      'dscms:titles': JSON.stringify({
+        'o1': { title: 'A', fm: true, keys: { title: 'scalar', 'image.path': 'scalar' } },
+      }),
+    });
+    const { inferred } = await loadListing(gh, storage, resolvedOf([post('2026-07-01-a.md', 'o1')], []));
+    expect(inferred.map((i) => i.path)).toEqual(['image.path', 'title']);
+    expect(gh.calls).toEqual([]);
+  });
+
+  // The `fm` precedent (#12): the entry is a pure function of blob content, so
+  // an incomplete one costs exactly one read and heals. Nothing to migrate.
+  it('a pre-#13 cache entry self-heals on the first inference', async () => {
+    const gh = fakeGh({ 'o1': withFront('title: A\nauthor: Kay') });
+    const storage = memStorage({ 'dscms:titles': JSON.stringify({ 'o1': { title: 'A' } }) });
+    const { inferred } = await loadListing(gh, storage, resolvedOf([post('2026-07-01-a.md', 'o1')], []));
+    expect(gh.calls).toEqual(['fetchBlobs:o1']);
+    expect(inferred.map((i) => i.path)).toEqual(['author', 'title']);
   });
 });
