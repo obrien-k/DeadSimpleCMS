@@ -21,6 +21,7 @@ import { editRoute } from '../router.js';
 import { MSG } from '../messages.js';
 import { buildUnpublish, type PublishTarget } from './Publish.js';
 import type { UnpublishTarget } from './Unpublish.js';
+import { ConflictView } from './Conflict.js';
 
 export interface EditorProps {
   gh: GhClient;
@@ -213,6 +214,10 @@ export function EditorView({ gh, resolved, storage, path, onPublished, onUnpubli
   // blocks the page, and the wording is where "your only copy" vs "reversible"
   // gets said.
   const [confirming, setConfirming] = useState<'delete' | 'unpublish' | null>(null);
+  // A Save the server rejected because HEAD moved (#15). `mine` is the content
+  // the writer tried to save; `theirs` is what is now on GitHub. Non-null means
+  // the compare view is up, replacing the editor until they choose.
+  const [conflict, setConflict] = useState<{ mine: string; theirs: string } | null>(null);
   // Uploaded images ride along to the post's next Save so image + post land in
   // one commit (proved atomic by prototype/git-data-move) — and an abandoned
   // post commits nothing, leaving no orphan blob in the repo's history (#14).
@@ -336,11 +341,21 @@ export function EditorView({ gh, resolved, storage, path, onPublished, onUnpubli
       next = withBody(next, body);
       // Pending images are a reason to save even when the text is unchanged.
       if (next === raw && pendingImages.length === 0) return 'Nothing to save.';
-      await gh.commit({
-        message: `Update: ${values.title || path}`,
-        changes: [{ path: path!, content: next }, ...pendingImages],
-        expectedHeadSha: headAtOpen ?? undefined,
-      });
+      try {
+        await gh.commit({
+          message: `Update: ${values.title || path}`,
+          changes: [{ path: path!, content: next }, ...pendingImages],
+          expectedHeadSha: headAtOpen ?? undefined,
+        });
+      } catch (e) {
+        // #15: HEAD moved under the writer. Instead of the old dead end, fetch
+        // what's now on GitHub and hand off to the side-by-side compare.
+        if (e instanceof GhError && e.conflict) {
+          setConflict({ mine: next, theirs: (await gh.readFile(path!)).text });
+          return null;
+        }
+        throw e;
+      }
       setPendingImages([]);
       setRaw(next);
       setOriginal(values);
@@ -407,7 +422,84 @@ export function EditorView({ gh, resolved, storage, path, onPublished, onUnpubli
       return null;
     });
 
+  // --- Conflict resolution, Variant B (#15) ---
+
+  // Keep mine: re-commit the writer's version parented on the CURRENT head, so
+  // it lands and replaces what's there. If HEAD moved yet again in between, the
+  // compare simply re-opens against the newer version rather than clobbering it.
+  const keepMine = () =>
+    run(async () => {
+      const head = await gh.getHeadSha();
+      try {
+        await gh.commit({
+          message: `Update: ${values.title || path}`,
+          changes: [{ path: path!, content: conflict!.mine }, ...pendingImages],
+          expectedHeadSha: head,
+        });
+      } catch (e) {
+        if (e instanceof GhError && e.conflict) {
+          setConflict({ mine: conflict!.mine, theirs: (await gh.readFile(path!)).text });
+          return null;
+        }
+        throw e;
+      }
+      setPendingImages([]);
+      setRaw(conflict!.mine);
+      setOriginal(values);
+      setHeadAtOpen(await gh.getHeadSha());
+      setConflict(null);
+      return isDraft ? 'Draft saved.' : MSG.staleEdit;
+    });
+
+  // Use theirs: discard the writer's edits and load the GitHub version into the
+  // editor to continue from. Nothing is committed — it just adopts their text.
+  const useTheirs = () =>
+    run(async () => {
+      const theirs = conflict!.theirs;
+      const data = read(theirs)?.data ?? {};
+      const v = valuesOf(fields, data);
+      setRaw(theirs);
+      setValues(v);
+      setOriginal(v);
+      setBody(read(theirs)?.body ?? theirs);
+      setPendingImages([]);
+      setHeadAtOpen(await gh.getHeadSha());
+      setConflict(null);
+      return 'Loaded the latest version. Your earlier changes were discarded.';
+    });
+
+  // Save mine as a copy: the door that loses nothing. Write the writer's version
+  // to a new draft, leaving the GitHub version untouched, then open the copy.
+  const saveCopy = () =>
+    run(async () => {
+      const base = slugify(values.title || 'my-post');
+      const copyPath = `${newDraftsDir}/${base}-my-changes.md`;
+      await gh.commit({
+        message: `Save my changes: ${values.title || base}`,
+        changes: [{ path: copyPath, content: conflict!.mine }, ...pendingImages],
+      });
+      setPendingImages([]);
+      setConflict(null);
+      location.hash = editRoute(copyPath);
+      return null;
+    });
+
   if (!loaded) return <p>{status ?? 'Opening…'}</p>;
+
+  if (conflict) {
+    return (
+      <ConflictView
+        mine={conflict.mine}
+        theirs={conflict.theirs}
+        busy={busy}
+        error={status}
+        onKeepMine={keepMine}
+        onUseTheirs={useTheirs}
+        onSaveCopy={saveCopy}
+        onCancel={() => setConflict(null)}
+      />
+    );
+  }
 
   return (
     <div class="editor">
