@@ -8,6 +8,7 @@ import { Setup } from './views/Setup.js';
 import { ListView } from './views/List.js';
 import { EditorView } from './views/Editor.js';
 import { PublishView, type PublishTarget } from './views/Publish.js';
+import { UnpublishView, type UnpublishTarget } from './views/Unpublish.js';
 
 export interface AppProps {
   /** From the installer-written config anchor; null = first-run prompt. */
@@ -20,6 +21,7 @@ export function App({ configuredRepo, storage }: AppProps) {
   const [token, setToken] = useState<string | null>(tokenStore.get(storage));
   const [promptedRepo, setPromptedRepo] = useState<string | null>(repoStore.get(storage));
   const [publishing, setPublishing] = useState<PublishTarget | null>(null);
+  const [unpublishing, setUnpublishing] = useState<UnpublishTarget | null>(null);
   const [expiryDays, setExpiryDays] = useState<number | null>(null);
   const [resolved, setResolved] = useState<Resolved | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -30,6 +32,7 @@ export function App({ configuredRepo, storage }: AppProps) {
   useEffect(() => {
     const onHash = () => {
       setPublishing(null);
+      setUnpublishing(null);
       const next = parseRoute(location.hash);
       // Landing on the list re-resolves rather than reusing what is held:
       // the resolution carries the listing with it (one query answers both),
@@ -114,6 +117,15 @@ export function App({ configuredRepo, storage }: AppProps) {
     );
   }
 
+  if (unpublishing) {
+    return (
+      <main>
+        {banner}
+        <UnpublishView gh={gh} target={unpublishing} onDone={() => (location.hash = '#/')} />
+      </main>
+    );
+  }
+
   if (layoutError) {
     return (
       <main>
@@ -154,6 +166,7 @@ export function App({ configuredRepo, storage }: AppProps) {
           storage={storage}
           path={route.view === 'edit' ? route.path : null}
           onPublished={(target) => setPublishing(target)}
+          onUnpublished={(target) => setUnpublishing(target)}
         />
       )}
     </main>

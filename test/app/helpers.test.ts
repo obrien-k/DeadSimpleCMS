@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseRepoConfig, ConfigError } from '../../src/app/config.js';
 import { checkTokenFormat } from '../../src/app/token.js';
-import { jekyllDate, publishPath, slugify } from '../../src/app/dates.js';
+import { jekyllDate, publishPath, slugify, unpublishPath } from '../../src/app/dates.js';
 import { parseRoute } from '../../src/app/router.js';
 
 describe('repo config anchor', () => {
@@ -62,6 +62,32 @@ describe('publish path', () => {
     expect(publishPath('my-post', '2026-07-17 01:30:00 +0200', 'docs/_posts')).toBe(
       'docs/_posts/2026-07-17-my-post.md',
     );
+  });
+});
+
+// The inverse move behind Unpublish (#16): _posts/DATE-slug.md → _drafts/slug.md.
+describe('unpublish path', () => {
+  it('strips the filename date prefix and retargets the drafts directory', () => {
+    expect(unpublishPath('_posts/2026-07-17-my-post.md', '_drafts')).toBe('_drafts/my-post.md');
+  });
+
+  // The front-matter date is the source of truth (#5); only the redundant
+  // filename prefix is dropped, so republishing re-derives the same name. A slug
+  // that itself begins with a year keeps that year — only the leading DATE- goes.
+  it('drops only the leading date, not a year inside the slug', () => {
+    expect(unpublishPath('_posts/2019-01-02-2020-review.md', '_drafts')).toBe('_drafts/2020-review.md');
+  });
+
+  // #17: drafts are written under the resolved write base, wherever that is.
+  it('retargets into the resolved drafts directory, wherever it is', () => {
+    expect(unpublishPath('docs/_posts/2026-07-17-my-post.md', 'docs/_drafts')).toBe(
+      'docs/_drafts/my-post.md',
+    );
+  });
+
+  // A hand-named post with no date prefix keeps its basename as the draft slug.
+  it('leaves a non-dated post basename intact', () => {
+    expect(unpublishPath('_posts/hand-named.md', '_drafts')).toBe('_drafts/hand-named.md');
   });
 });
 

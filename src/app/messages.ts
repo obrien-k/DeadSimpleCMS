@@ -132,6 +132,20 @@ export const MSG = {
     'Image added. Write a short description between the [ ] so screen readers can read it — it is left blank on purpose. Its embedded location data (where the photo was taken) was removed automatically. The image is saved when you Save the post.',
   imageTooLarge: (name: string) =>
     `“${name}” could not be read as an image. Only photo files (JPEG, PNG, and similar) can be added.`,
+  // The green end of a deliberate Unpublish (#16). trackRevert's `reverted`
+  // copy speaks to the #9 build-failure undo ("ready to fix"); here the writer
+  // chose to take a working post down, so the words differ — and it names the
+  // ~10-min Pages cache (#4) so the writer who reloads and still sees the page
+  // is not left thinking the unpublish failed.
+  unpublished:
+    'Unpublished. Your post is back in your drafts. The live page can still show for a few minutes until GitHub’s cache clears — that is normal, not a failure.',
+  // Two-step confirms (#16). Delete removes the writer's only in-app copy;
+  // Unpublish is reversible, and the copy says so rather than borrowing Delete's
+  // alarm.
+  confirmDeleteDraft:
+    'Delete this draft? This is your only copy here, and it cannot be brought back from inside the app.',
+  confirmUnpublish:
+    'Take this post offline? It moves back to your drafts, so you can edit it and publish again later.',
   noJekyllSite: (root: string) =>
     `No Jekyll site was found in ${
       root === '' ? 'the top level of this repository' : `the “${root}” folder of this repository`
