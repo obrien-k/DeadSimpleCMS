@@ -89,8 +89,12 @@ export const MSG = {
   emptyToken: 'Paste a token to continue.',
   probeFailed:
     'GitHub did not accept the token for this repository. This usually means one of: the token was scoped to a different repository, no repository was chosen in the “Repository access” dropdown, or “Contents” access was not set to “Read and write”. Create the token again with only this site’s repository selected.',
+  // #15: the neutral core, shared by the Editor's compare view and the Publish
+  // undo path. It no longer tells the writer to "reload and re-apply" by hand —
+  // that was the dead end the compare replaces — so it stops at the honest facts
+  // and lets each caller add its own next step.
   conflict:
-    'This post changed on GitHub since you opened it (maybe from another tab or device). Nothing was saved. Reload to get the latest version, then re-apply your edit.',
+    'This post changed on GitHub since you opened it — maybe from another tab, your phone, or someone you share the site with. Nothing was overwritten.',
   dropdownCallout: (repo: string) =>
     `On the token page, under “Repository access”, choose ONLY ${repo}. That dropdown is the one thing keeping this token limited to your site.`,
   expiryWarning: (days: number) =>
