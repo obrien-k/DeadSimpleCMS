@@ -81,6 +81,12 @@ export const MSG = {
   // Row 4 of #17's ladder: neither _config.yml nor _posts/ at the resolved
   // root. Guessing on from here is how posts get written where Jekyll never
   // reads, so the app stops instead.
+  // #18: GitHub returns a partial tree above ~100k files and says only that it
+  // did so, not what it left out. Posts outside the usual folder cannot be
+  // looked for, and pretending otherwise is the silent omission this all exists
+  // to stop.
+  treeTruncated:
+    'This repository has too many files for the CMS to search all of it, so only posts in the usual folder are listed. If you keep posts in other folders, they will not appear here.',
   noJekyllSite: (root: string) =>
     `No Jekyll site was found in ${
       root === '' ? 'the top level of this repository' : `the “${root}” folder of this repository`

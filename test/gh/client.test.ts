@@ -128,6 +128,30 @@ describe('queryPaths', () => {
     expect(r.files.get('_config.yml')).toBeNull();
   });
 
+  it('getTree returns blob paths with their oids, at the named branch', async () => {
+    const { calls, fetchImpl } = fake([
+      () =>
+        json({
+          sha: 't1',
+          tree: [
+            { path: 'docs', type: 'tree', sha: 'tree-sha' },
+            { path: 'docs/_posts/2026-07-01-a.md', type: 'blob', sha: 'blob-a' },
+          ],
+          truncated: false,
+        }),
+    ]);
+    const r = await client(fetchImpl as typeof fetch).getTree('gh-pages');
+    // Directories are implied by the paths; only blobs are content.
+    expect(r.files).toEqual([{ path: 'docs/_posts/2026-07-01-a.md', sha: 'blob-a' }]);
+    expect(r.truncated).toBe(false);
+    expect(calls[0]!.url).toContain('/git/trees/gh-pages?recursive=1');
+  });
+
+  it('getTree surfaces truncation instead of passing off a partial tree as whole', async () => {
+    const { fetchImpl } = fake([() => json({ tree: [], truncated: true })]);
+    expect((await client(fetchImpl as typeof fetch).getTree('main')).truncated).toBe(true);
+  });
+
   it('makes no request when nothing was asked for', async () => {
     const { calls, fetchImpl } = fake([]);
     const r = await client(fetchImpl as typeof fetch).queryPaths({ branch: 'main' });

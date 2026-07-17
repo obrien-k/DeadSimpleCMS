@@ -40,9 +40,12 @@ const resolvedOf = (posts: FoundFile[], drafts: FoundFile[], root = ''): Resolve
     sourceRoot: root,
     postsDirs: [root ? `${root}/_posts` : '_posts'],
     draftsDirs: [root ? `${root}/_drafts` : '_drafts'],
+    writeBase: root,
     basis: 'pages',
+    postsScan: 'recursive',
   },
   entries: { posts, drafts },
+  sourceFiles: [],
 });
 
 const md = (title: string) => ({
