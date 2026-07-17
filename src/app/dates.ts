@@ -22,6 +22,18 @@ export function publishPath(slug: string, frontMatterDate: string, postsDir: str
   return `${postsDir}/${frontMatterDate.slice(0, 10)}-${slug}.md`;
 }
 
+// The inverse of publishPath, behind Unpublish (#16): _posts/DATE-slug.md →
+// _drafts/slug.md. The date is dropped from the *filename* only — it lives in
+// the front matter, which is the source of truth (#5) and rides along untouched,
+// so republishing re-derives the identical name. Only the leading YYYY-MM-DD-
+// is stripped, so a slug that itself opens with a year survives. `draftsDir` is
+// the resolved write base, never assumed (#17).
+export function unpublishPath(postPath: string, draftsDir: string): string {
+  const base = postPath.slice(postPath.lastIndexOf('/') + 1).replace(/\.md$/, '');
+  const slug = base.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+  return `${draftsDir}/${slug}.md`;
+}
+
 export function slugify(title: string): string {
   return title
     .toLowerCase()

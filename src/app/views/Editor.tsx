@@ -16,10 +16,11 @@ import type { Resolved } from '../../layout/index.js';
 import type { Inferred } from '../../infer/index.js';
 import { downscale, imageDir, imageFilename, insertionMarkdown } from '../../image/index.js';
 import { loadListing } from '../../listing/index.js';
-import { jekyllDate, publishPath, slugify } from '../dates.js';
+import { jekyllDate, publishPath, slugify, unpublishPath } from '../dates.js';
 import { editRoute } from '../router.js';
 import { MSG } from '../messages.js';
-import type { PublishTarget } from './Publish.js';
+import { buildUnpublish, type PublishTarget } from './Publish.js';
+import type { UnpublishTarget } from './Unpublish.js';
 
 export interface EditorProps {
   gh: GhClient;
@@ -29,6 +30,8 @@ export interface EditorProps {
   /** null = new post */
   path: string | null;
   onPublished(target: PublishTarget): void;
+  /** Unpublish moves a post back to a draft, then hands off to its own finish line (#16). */
+  onUnpublished(target: UnpublishTarget): void;
 }
 
 /** A rendered form row. `path` is a dotted leaf path — the address `patch` takes. */
@@ -180,12 +183,15 @@ export function spliceText(
   return { text: text.slice(0, start) + snippet + text.slice(end), caret: start + snippet.length };
 }
 
-export function EditorView({ gh, resolved, storage, path, onPublished }: EditorProps) {
+export function EditorView({ gh, resolved, storage, path, onPublished, onUnpublished }: EditorProps) {
   const { layout } = resolved;
   const isNew = path === null;
   const isDraft = path !== null && layout.draftsDirs.some((d) => path.startsWith(`${d}/`));
   const isPost =
     isNew || isDraft || (path !== null && layout.postsDirs.some((d) => path.startsWith(`${d}/`)));
+  // A live post — the only thing Unpublish applies to. A page (isPost false) has
+  // no `_drafts` equivalent to move to, and a draft is not live to take down.
+  const isPublishedPost = isPost && !isDraft && !isNew;
   // postsDirs/draftsDirs are read sets and can be empty — a site with no
   // `_drafts/` anywhere is ordinary. Writes go through writeBase, which always
   // resolves to a usable target (#18).
@@ -202,6 +208,11 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(false);
+  // Which destructive action is one click from happening (#16). Both Delete and
+  // Unpublish arm inline rather than through a native confirm() — a modal dialog
+  // blocks the page, and the wording is where "your only copy" vs "reversible"
+  // gets said.
+  const [confirming, setConfirming] = useState<'delete' | 'unpublish' | null>(null);
   // Uploaded images ride along to the post's next Save so image + post land in
   // one commit (proved atomic by prototype/git-data-move) — and an abandoned
   // post commits nothing, leaving no orphan blob in the repo's history (#14).
@@ -362,6 +373,40 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
       return null;
     });
 
+  // Unpublish (#16): the reverse of publish. Move the live post back to a draft
+  // (keeping its content and front-matter date — the filename date re-derives on
+  // republish) and hand off to the finish line to watch the site rebuild without
+  // it. Operates on the committed content (`raw`), guarded by the same CAS as a
+  // Save, so a concurrent change conflicts rather than clobbers.
+  const unpublish = () =>
+    run(async () => {
+      const to = unpublishPath(path!, newDraftsDir);
+      const front = read(raw)?.data ?? {};
+      const slug = to.slice(to.lastIndexOf('/') + 1).replace(/\.md$/, '');
+      const { message, changes, deletions } = buildUnpublish({ path: path!, from: to, slug, front }, raw);
+      const { sha } = await gh.commit({
+        message,
+        changes,
+        deletions,
+        expectedHeadSha: headAtOpen ?? undefined,
+      });
+      onUnpublished({ sha, from: to });
+      return null;
+    });
+
+  // Delete a draft (#16): one commit that tombstones the file. No finish line —
+  // drafts are not built, so there is nothing to watch; just go back to the list.
+  const del = () =>
+    run(async () => {
+      await gh.commit({
+        message: `Delete draft: ${values.title || path}`,
+        deletions: [path!],
+        expectedHeadSha: headAtOpen ?? undefined,
+      });
+      location.hash = '#/';
+      return null;
+    });
+
   if (!loaded) return <p>{status ?? 'Opening…'}</p>;
 
   return (
@@ -390,6 +435,38 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
               Publish
             </button>
           )}
+          {isPublishedPost &&
+            (confirming === 'unpublish' ? (
+              <span class="confirm">
+                {MSG.confirmUnpublish}
+                <button type="button" disabled={busy} onClick={unpublish}>
+                  Unpublish
+                </button>
+                <button type="button" onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button type="button" disabled={busy} onClick={() => setConfirming('unpublish')}>
+                Unpublish
+              </button>
+            ))}
+          {isDraft &&
+            (confirming === 'delete' ? (
+              <span class="confirm">
+                {MSG.confirmDeleteDraft}
+                <button type="button" class="danger" disabled={busy} onClick={del}>
+                  Delete
+                </button>
+                <button type="button" onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button type="button" disabled={busy} onClick={() => setConfirming('delete')}>
+                Delete draft
+              </button>
+            ))}
         </div>
       </header>
       {status && <p class="banner">{status}</p>}
