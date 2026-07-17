@@ -1,0 +1,4 @@
+# Reproducible from make-fixture.py — don't bloat history with a 5.9 MB binary
+fixtures/
+# Transient browser capture from the Playwright harness
+.resized.json

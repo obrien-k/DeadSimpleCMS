@@ -104,6 +104,15 @@ export const MSG = {
   // text, so an un-caveated preview lies about what the page will look like.
   liquidPreview:
     'This file uses Jekyll templating ({% … %}), which builds part of the page when your site is published. The preview cannot show it, so it will look wrong here — that is expected. Your text is saved exactly as written; leave the {% … %} parts alone unless you know what they do.',
+  // Said once after an image is inserted (#14). Two things the owner cannot see
+  // and would want to know: the `![]()` has no alt text (theirs to write — the
+  // app will not invent a description of their photo), and re-saving the photo
+  // for the web removed its embedded location data. The image commits with the
+  // post on Save, so nothing lands if the post is abandoned.
+  imageInserted:
+    'Image added. Write a short description between the [ ] so screen readers can read it — it is left blank on purpose. Its embedded location data (where the photo was taken) was removed automatically. The image is saved when you Save the post.',
+  imageTooLarge: (name: string) =>
+    `“${name}” could not be read as an image. Only photo files (JPEG, PNG, and similar) can be added.`,
   noJekyllSite: (root: string) =>
     `No Jekyll site was found in ${
       root === '' ? 'the top level of this repository' : `the “${root}” folder of this repository`
