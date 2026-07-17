@@ -46,6 +46,11 @@ export type FinishLineEvent =
   // says whether that file is the one just published — the gate on blaming the
   // user. No cause, or a cause that isn't theirs, both fall to the honest floor.
   | { kind: 'build-failed'; cause?: { file: string; line?: number; problem: string; mine: boolean } }
+  // The undo of a red publish landed and the site is building again (#9).
+  | { kind: 'reverted' }
+  // The undo landed, but the build is still red — so the break pre-dated this
+  // post and removing it could not fix it. No attribution: the post is gone.
+  | { kind: 'revert-failed' }
   | { kind: 'live'; url: string }
   | { kind: 'live-unverified'; url: string }
   | { kind: 'skipped'; reason: 'future-dated' | 'unpublished' }
@@ -83,6 +88,43 @@ export interface TrackOptions {
   maxDeploymentPolls?: number;
   maxStatusPolls?: number;
   sitemapRetries?: number;
+}
+
+// The build's terminal outcome, once. Both publish and revert wait on the same
+// signal — the `build` check-run — so the poll loop lives here once. `success`
+// covers `neutral` too: either way the build finished and did not fail.
+type BuildOutcome = 'success' | 'failure' | 'timeout';
+
+// Poll the `build` check-run to a terminal outcome, emitting one `building`
+// line per displayed state change (#9). A failed build never deploys, so this
+// is the ONLY signal that reports a red build — the Deployments API has nothing
+// to fail and `pages/builds/latest` sticks at "building" forever (both
+// measured). Returns the outcome via `return` so callers consume it with
+// `yield*`; interpreting it (attribution for publish, pre-existing-break for
+// revert) is theirs.
+async function* watchBuild(
+  gh: Pick<TrackDeps['gh'], 'getBuildState'>,
+  sleep: (ms: number) => Promise<void>,
+  sha: string,
+  pollMs: number,
+  maxStatusPolls: number,
+): AsyncGenerator<FinishLineEvent, BuildOutcome> {
+  let lastState = '';
+  for (let i = 0; i < maxStatusPolls; i++) {
+    const build = await gh.getBuildState(sha);
+    if (build.conclusion === 'failure') return 'failure';
+    if (build.status === 'completed') return 'success'; // success or neutral
+    // Dedup on the DISPLAYED state, not the raw status: `none` (no run yet) and
+    // `queued` both read as "waiting to start", and emitting that line twice
+    // looks like a stutter.
+    const shown = build.status === 'in_progress' ? 'in_progress' : 'queued';
+    if (shown !== lastState) {
+      lastState = shown;
+      yield { kind: 'building', state: shown };
+    }
+    await sleep(pollMs);
+  }
+  return 'timeout';
 }
 
 function extractLocs(xml: string): string[] {
@@ -137,40 +179,20 @@ export async function* trackPublish(
 
   yield { kind: 'publishing' };
 
-  // Build phase (#9). The `build` check-run is the only signal that reports a
-  // red build: a failed build never deploys, so the Deployments API has nothing
-  // to fail and `pages/builds/latest` sticks at "building" forever (both
-  // measured). Poll the check-run to a terminal outcome.
-  let built = false;
-  let lastState = '';
-  for (let i = 0; i < maxStatusPolls; i++) {
-    const build = await gh.getBuildState(target.sha);
-    if (build.conclusion === 'failure') {
-      // Translate only from the raw log, and only blame the user when it names
-      // the file they just published — a wrong file is worse than none (#9).
-      const cause = parseBuildFailure((await gh.getBuildLog(target.sha)) ?? '');
-      if (cause) {
-        yield { kind: 'build-failed', cause: { ...cause, mine: cause.file === target.path } };
-      } else {
-        yield { kind: 'build-failed' };
-      }
-      return;
+  // Build phase (#9): wait on the check-run to a terminal outcome.
+  const outcome = yield* watchBuild(gh, sleep, target.sha, pollMs, maxStatusPolls);
+  if (outcome === 'failure') {
+    // Translate only from the raw log, and only blame the user when it names
+    // the file they just published — a wrong file is worse than none (#9).
+    const cause = parseBuildFailure((await gh.getBuildLog(target.sha)) ?? '');
+    if (cause) {
+      yield { kind: 'build-failed', cause: { ...cause, mine: cause.file === target.path } };
+    } else {
+      yield { kind: 'build-failed' };
     }
-    if (build.status === 'completed') {
-      built = true; // success or neutral — either way, look for the live URL
-      break;
-    }
-    // Dedup on the DISPLAYED state, not the raw status: `none` (no run yet) and
-    // `queued` both read as "waiting to start", and emitting that line twice
-    // looks like a stutter.
-    const shown = build.status === 'in_progress' ? 'in_progress' : 'queued';
-    if (shown !== lastState) {
-      lastState = shown;
-      yield { kind: 'building', state: shown };
-    }
-    await sleep(pollMs);
+    return;
   }
-  if (!built) {
+  if (outcome === 'timeout') {
     yield { kind: 'timeout' };
     return;
   }
@@ -222,4 +244,28 @@ export async function* trackPublish(
     }
     await sleep(pollMs);
   }
+}
+
+export interface RevertDeps {
+  gh: Pick<TrackDeps['gh'], 'getBuildState'>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+// The finish line for undoing a red publish (#9). The undo commit removed the
+// breaking post and restored its draft; all that is left to confirm is that the
+// site builds again. There is no URL phase — the post is a draft now and is
+// meant to be absent from the site — and no log/attribution: a build still red
+// after the post is gone was broken by something that pre-dates it, so blaming
+// this post would be false. Just the outcome, in the writer's terms.
+export async function* trackRevert(
+  deps: RevertDeps,
+  target: { sha: string },
+  opts: TrackOptions = {},
+): AsyncGenerator<FinishLineEvent> {
+  const { gh, sleep } = deps;
+  const { pollMs = 3000, maxStatusPolls = 100 } = opts;
+  const outcome = yield* watchBuild(gh, sleep, target.sha, pollMs, maxStatusPolls);
+  if (outcome === 'timeout') yield { kind: 'timeout' };
+  else if (outcome === 'failure') yield { kind: 'revert-failed' };
+  else yield { kind: 'reverted' };
 }

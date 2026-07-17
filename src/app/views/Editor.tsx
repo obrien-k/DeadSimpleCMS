@@ -355,7 +355,10 @@ export function EditorView({ gh, resolved, storage, path, onPublished }: EditorP
         expectedHeadSha: headAtOpen ?? undefined,
       });
       setPendingImages([]);
-      onPublished({ sha, slug, path: to, front: read(next)?.data ?? {} });
+      // `from` is the draft just moved — the address Undo restores the post to
+      // if the build fails (#9). Publish is only enabled for an existing draft,
+      // so this is never null here.
+      onPublished({ sha, slug, path: to, from: path!, front: read(next)?.data ?? {} });
       return null;
     });
 
