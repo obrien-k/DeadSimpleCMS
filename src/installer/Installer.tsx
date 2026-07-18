@@ -176,6 +176,7 @@ export function Installer() {
                   onInput={(e) => setToken((e.target as HTMLInputElement).value)}
                 />
               </label>
+              <p class="note">{IMSG.keepTokenNote}</p>
               {tokenError && <p class="banner error">{tokenError}</p>}
               <button type="submit">Check &amp; continue →</button>
             </form>
@@ -223,7 +224,13 @@ export function Installer() {
   function renderDone(p: Extract<Phase, { at: 'done' }>) {
     const live = p.outcome === 'live';
     const failed = p.outcome === 'failed';
-    const buildMark: StepStatus = live ? 'done' : failed ? 'failed' : 'active';
+    const buildMark: StepStatus = live
+      ? 'done'
+      : failed
+        ? 'failed'
+        : p.outcome === 'not-building'
+          ? 'pending'
+          : 'active';
     const liveMark: StepStatus = live ? 'done' : 'pending';
     return (
       <section>
@@ -240,11 +247,21 @@ export function Installer() {
             </p>
             {p.repaired && <p class="note">{IMSG.repairedNote}</p>}
             <p>Open the link above to write your first post.</p>
+            <p class="note">{IMSG.signInAgainNote}</p>
           </>
         )}
         {p.outcome === 'building' && (
           <>
             <p class="banner">{IMSG.stillBuilding}</p>
+            {p.buildType === 'workflow' && <p class="note">{IMSG.workflowWarning}</p>}
+            <p>
+              <a href={p.url}>{p.url}</a>
+            </p>
+          </>
+        )}
+        {p.outcome === 'not-building' && (
+          <>
+            <p class="banner error">{IMSG.notBuilding}</p>
             {p.buildType === 'workflow' && <p class="note">{IMSG.workflowWarning}</p>}
             <p>
               <a href={p.url}>{p.url}</a>

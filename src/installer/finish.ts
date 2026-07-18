@@ -6,7 +6,11 @@
 // "build"), keeps the check-run only to catch a *failed* build fast, and never
 // claims success it hasn't seen: a timeout resolves as 'building', honestly.
 
-export type InstallOutcome = 'live' | 'building' | 'failed';
+// 'building' = something is underway but hasn't finished within the wait.
+// 'not-building' = nothing ever started for our commit (no build check-run, no
+// deployment) — the push triggered no Pages build at all, which is a setup
+// problem to name rather than tell the user to "wait".
+export type InstallOutcome = 'live' | 'building' | 'not-building' | 'failed';
 
 // The slice of the gh client this needs — structural, so tests pass a fake and
 // the real GhClient satisfies it without importing it here.
@@ -38,6 +42,11 @@ export async function watchInstall(
   const maxTicks = opts.maxTicks ?? 30;
   const intervalMs = opts.intervalMs ?? 5000;
   const start = now();
+  // Did the push kick off anything at all? A build check-run appearing, or a
+  // deployment being created, is "activity" regardless of build type (the
+  // check-run isn't named `build` on custom workflows, but a deployment still
+  // shows up). If neither is ever seen, the site isn't publishing our commit.
+  let sawActivity = false;
 
   for (let i = 0; i < maxTicks; i++) {
     opts.onProgress?.(now() - start);
@@ -46,11 +55,13 @@ export async function watchInstall(
     // to succeed *or* fail, so the poll would hang to the timeout. Check the
     // check-run for red first and bail fast.
     const build = await gh.getBuildState(sha).catch(() => null);
+    if (build && build.status !== 'none') sawActivity = true;
     if (build?.status === 'completed' && build.conclusion === 'failure') return 'failed';
 
     // The deployment reaching `success` is the real "it's live" signal.
     const dep = await gh.getDeployment(sha).catch(() => null);
     if (dep) {
+      sawActivity = true;
       const statuses = await gh.getDeploymentStatuses(dep.id).catch(() => []);
       if (statuses.some((s) => s.state === 'success')) return 'live';
       if (statuses.some((s) => s.state === 'error' || s.state === 'failure')) return 'failed';
@@ -58,7 +69,7 @@ export async function watchInstall(
 
     await sleep(intervalMs);
   }
-  // Bounded, not infinite: we've waited long enough that "still building, here's
-  // your link" is more use than spinning. Never a false "live".
-  return 'building';
+  // Bounded, not infinite. If something was underway, say "still building";
+  // if nothing ever started, say so — never a false "live".
+  return sawActivity ? 'building' : 'not-building';
 }

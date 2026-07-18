@@ -49,8 +49,9 @@ describe('watchInstall (#30 follow-up: honest completion)', () => {
     expect(outcome).toBe('failed');
   });
 
-  it('reports building (not live) on timeout — the whole point of the fix', async () => {
+  it('reports building on timeout when something was underway (a build check-run exists)', async () => {
     let sleeps = 0;
+    // default fake: build is in_progress = activity seen, but never completes.
     const outcome = await watchInstall(fake(), 'sha', {
       sleep: async () => {
         sleeps++;
@@ -59,6 +60,16 @@ describe('watchInstall (#30 follow-up: honest completion)', () => {
     });
     expect(outcome).toBe('building');
     expect(sleeps).toBe(4);
+  });
+
+  it('reports not-building when nothing ever started (no check-run, no deployment)', async () => {
+    // The welcome-to-the-internet case: the push triggered no Pages build at all.
+    const outcome = await watchInstall(
+      fake({ getBuildState: async () => ({ status: 'none', conclusion: null }) }),
+      'sha',
+      { sleep: nap, maxTicks: 3 },
+    );
+    expect(outcome).toBe('not-building');
   });
 
   it('calls onProgress once per tick with elapsed time', async () => {
