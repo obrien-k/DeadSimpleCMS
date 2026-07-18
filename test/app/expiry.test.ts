@@ -34,4 +34,11 @@ describe('renewal links (#30)', () => {
     expect(tokenTemplateUrl('owner')).toContain('/personal-access-tokens/new?');
     expect(tokenTemplateUrl('owner')).not.toBe(tokenListUrl());
   });
+
+  // 366 (GitHub's ceiling) is rejected by accounts with a 365-day max-lifetime
+  // policy; 365 is valid everywhere. Regression guard for the dogfooding bug.
+  it('requests a 365-day expiry, not 366', () => {
+    expect(tokenTemplateUrl('owner')).toContain('expires_in=365');
+    expect(tokenTemplateUrl('owner')).not.toContain('expires_in=366');
+  });
 });

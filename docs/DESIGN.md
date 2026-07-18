@@ -74,14 +74,14 @@ One HTML file at `/admin/index.html` in the user's site repo, loading a **vendor
 
 - Fine-grained GitHub personal access token, scoped to the one site repo. Permissions: Contents read/write, Actions read, Pages read, Metadata read. **This set is not verified.** The finish-line prototype reads `/deployments` successfully with it — but the scratch repo is *public*, and an unauthenticated request reads `/deployments` and `/actions/runs` just as well, so that success proves only that the repo is public (the same false pass documented in the token-scope section). Whether a **private** site repo needs `Deployments: read` — not requested here — is untested. Not MVP-blocking: Pages' free tier requires public.
 - Guided creation via a **template URL** that pre-fills the token form, paste once, stored in `localStorage`.
-- **Verified (July 2026).** GitHub shipped template URLs for fine-grained PATs in [August 2025](https://github.blog/changelog/2025-08-26-template-urls-for-fine-grained-pats-and-updated-permissions-ui/). The form accepts `name`, `description`, `target_name` (user or org slug), `expires_in` (1–366, or `none`), and one parameter per permission. Ours:
+- **Verified (July 2026).** GitHub shipped template URLs for fine-grained PATs in [August 2025](https://github.blog/changelog/2025-08-26-template-urls-for-fine-grained-pats-and-updated-permissions-ui/). The form accepts `name`, `description`, `target_name` (user or org slug), `expires_in` (1–366, or `none`), and one parameter per permission. Ours uses **365**, not the 366 ceiling: an account/org "maximum lifetime" policy set to 365 rejects 366 (a real account hit this in dogfooding), and 365 is valid under both the default and a 365 cap. Ours:
 
   ```
   https://github.com/settings/personal-access-tokens/new
     ?name=DeadSimpleCMS
     &description=Lets+DeadSimpleCMS+publish+posts+to+your+site
     &target_name={owner}
-    &expires_in=366
+    &expires_in=365
     &contents=write
     &actions=read
     &pages=read

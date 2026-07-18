@@ -38,7 +38,10 @@ export function tokenTemplateUrl(owner: string): string {
     name: 'DeadSimpleCMS',
     description: 'Lets DeadSimpleCMS publish posts to your site',
     target_name: owner,
-    expires_in: '366',
+    // 365, not GitHub's 366 ceiling: an account/org "maximum lifetime" policy
+    // capped at 365 rejects 366 outright ("greater than the allowed 365"). 365
+    // is valid under both the default ceiling and a 365 cap, so it never trips.
+    expires_in: '365',
     contents: 'write',
     actions: 'read',
     pages: 'read',

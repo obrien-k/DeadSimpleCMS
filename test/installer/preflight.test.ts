@@ -14,7 +14,9 @@ function fakeClient(over: Partial<Record<keyof PreflightClient, unknown>> = {}):
       build_type: 'legacy',
     }),
     getDefaultBranch: async () => 'main',
-    getTree: async () => ({ files: [], truncated: false }),
+    // A Jekyll site by default (has _config.yml at the source root), so the
+    // Jekyll gate passes and tests can focus on the collision behaviour.
+    getTree: async () => ({ files: [{ path: '_config.yml' }], truncated: false }),
     readFile: async () => ({ text: '', sha: 'x' }),
     tokenExpiry: () => null,
     ...(over as object),
@@ -73,7 +75,7 @@ describe('preflight gate sequence (#29)', () => {
     const r = await preflight(
       fakeClient({
         getTree: async () => ({
-          files: [{ path: 'admin/index.html' }, { path: 'admin/bundle.js' }],
+          files: [{ path: '_config.yml' }, { path: 'admin/index.html' }, { path: 'admin/bundle.js' }],
           truncated: false,
         }),
         readFile: async () => ({
@@ -98,6 +100,7 @@ describe('preflight gate sequence (#29)', () => {
         }),
         getTree: async () => ({
           files: [
+            { path: 'docs/_config.yml' },
             { path: 'docs/admin/index.html' },
             { path: 'docs/admin/config.yml' },
             { path: 'docs/_posts/a.md' },
@@ -119,7 +122,10 @@ describe('preflight gate sequence (#29)', () => {
   it('refuses an unknown admin/index.html', async () => {
     const r = await preflight(
       fakeClient({
-        getTree: async () => ({ files: [{ path: 'admin/index.html' }], truncated: false }),
+        getTree: async () => ({
+          files: [{ path: '_config.yml' }, { path: 'admin/index.html' }],
+          truncated: false,
+        }),
         readFile: async () => ({ text: '<html>someone else</html>', sha: 'x' }),
       }),
       REPO,
@@ -127,5 +133,54 @@ describe('preflight gate sequence (#29)', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.collision.kind).toBe('unknown-index');
+  });
+
+  // A non-Jekyll site (no _config.yml) publishes a build output, not the
+  // committed admin/, so installing would guarantee a 404 — refuse before
+  // writing. This is the Astro-repo case from dogfooding.
+  it('refuses a repo with no _config.yml as not a Jekyll site', async () => {
+    const r = await preflight(
+      fakeClient({
+        getTree: async () => ({
+          files: [{ path: 'astro.config.mjs' }, { path: 'src/pages/index.astro' }],
+          truncated: false,
+        }),
+      }),
+      REPO,
+      deps,
+    );
+    expect(r).toEqual({ ok: false, gate: 'not-jekyll' });
+  });
+
+  it('honours a /docs source root when looking for _config.yml', async () => {
+    const r = await preflight(
+      fakeClient({
+        getPages: async () => ({
+          html_url: 'https://octocat.github.io/blog/',
+          https_enforced: true,
+          source: { branch: 'main', path: '/docs' },
+        }),
+        // _config.yml at the repo root, not under docs/ — so from Pages' point
+        // of view there is no Jekyll site at the source root.
+        getTree: async () => ({ files: [{ path: '_config.yml' }], truncated: false }),
+      }),
+      REPO,
+      deps,
+    );
+    expect(r).toEqual({ ok: false, gate: 'not-jekyll' });
+  });
+
+  // Can't prove _config.yml is absent from a partial tree (#18), so don't refuse
+  // a possibly-fine site on incomplete evidence.
+  it('skips the Jekyll check when the tree came back truncated', async () => {
+    const r = await preflight(
+      fakeClient({
+        getTree: async () => ({ files: [{ path: 'assets/x.js' }], truncated: true }),
+      }),
+      REPO,
+      deps,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.collision.kind).toBe('clean');
   });
 });

@@ -30,7 +30,7 @@ export interface PreflightDeps {
   extractRepoMeta(html: string): string | null;
 }
 
-export type PreflightBlock = 'unreachable' | 'no-pages' | 'insecure';
+export type PreflightBlock = 'unreachable' | 'no-pages' | 'insecure' | 'not-jekyll';
 
 export type Preflight =
   | { ok: false; gate: PreflightBlock }
@@ -84,6 +84,18 @@ export async function preflight(
   const adminPrefix = adminPrefixFor(pages.source?.path);
   const parentLen = adminPrefix.length - ADMIN.length;
   const tree = await client.getTree(branch);
+
+  // 5. Jekyll-site check. The whole model — commit admin/ and let Pages serve
+  //    it, read posts from _config.yml + front matter — assumes a Jekyll site
+  //    built from the branch. A repo with no _config.yml at the source root is
+  //    something else (an Astro/Next build, say); its Pages publishes a build
+  //    output, not the committed admin/, so the editor is a guaranteed 404.
+  //    Refuse before writing rather than install into that. Skipped on a
+  //    truncated tree (#18): absence can't be proven when the read was partial.
+  const rootPrefix = adminPrefix.slice(0, parentLen);
+  if (!tree.truncated && !tree.files.some((f) => f.path === `${rootPrefix}_config.yml`)) {
+    return { ok: false, gate: 'not-jekyll' };
+  }
 
   // Re-root every admin/-side path to "admin/…" so the classifier stays
   // source-root-agnostic.

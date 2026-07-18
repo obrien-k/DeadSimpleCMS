@@ -1,9 +1,10 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { createClient } from '../gh/index.js';
 import { parseRepoConfig, ConfigError, readRepoConfig } from '../app/config.js';
 import { checkTokenFormat, tokenTemplateUrl } from '../app/token.js';
 import { preflight, type Preflight } from './preflight.js';
 import { buildInstallCommit } from './install.js';
+import { watchInstall, type InstallOutcome } from './finish.js';
 import { IMSG } from './messages.js';
 
 // dscms:repo out of an existing admin/index.html, using the browser DOM and the
@@ -20,15 +21,22 @@ function extractRepoMeta(html: string): string | null {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+type Step = 'committing' | 'building';
+type StepStatus = 'done' | 'active' | 'pending' | 'failed';
+const MARK: Record<StepStatus, string> = { done: '✔', active: '◐', pending: '○', failed: '✖' };
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 type Phase =
   | { at: 'repo' }
   | { at: 'token' }
   | { at: 'checking' }
   | { at: 'result'; pre: Preflight }
-  | { at: 'installing'; note: string }
-  | { at: 'done'; url: string; repaired: boolean }
+  | { at: 'installing'; step: Step; startedAt: number }
+  | { at: 'done'; outcome: InstallOutcome; url: string; repaired: boolean; buildType: 'legacy' | 'workflow' | null }
   | { at: 'error'; message: string };
 
 export function Installer() {
@@ -36,9 +44,17 @@ export function Installer() {
   const [repo, setRepo] = useState('');
   const [token, setToken] = useState('');
   const [tokenError, setTokenError] = useState<string | null>(null);
+  // A 1s heartbeat so the elapsed clock advances while we wait on the build.
+  const [, setNowTick] = useState(0);
 
   const owner = repo.split('/')[0] ?? '';
   const client = () => createClient({ token: token.trim(), repo: repo.trim() });
+
+  useEffect(() => {
+    if (phase.at !== 'installing' || phase.step !== 'building') return;
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [phase.at, phase.at === 'installing' ? phase.step : '']);
 
   async function runPreflight() {
     setPhase({ at: 'checking' });
@@ -72,7 +88,7 @@ export function Installer() {
   }
 
   async function install(pre: Extract<Preflight, { ok: true }>) {
-    setPhase({ at: 'installing', note: IMSG.installing });
+    setPhase({ at: 'installing', step: 'committing', startedAt: Date.now() });
     try {
       const gh = client();
       // Both payloads are served same-origin beside this installer, so the
@@ -90,24 +106,15 @@ export function Installer() {
       });
       const { sha } = await gh.commit(commit);
 
-      setPhase({ at: 'installing', note: IMSG.publishing });
-      await watchBuild(gh, sha);
+      // Watch the real Pages deployment; a timeout resolves 'building', never a
+      // false 'live' (the old poll's 404-on-success bug).
+      setPhase({ at: 'installing', step: 'building', startedAt: Date.now() });
+      const outcome = await watchInstall(gh, sha);
 
       const repaired = pre.collision.kind === 'ours' || pre.collision.kind === 'ours-moved';
-      setPhase({ at: 'done', url: pre.liveUrl, repaired });
+      setPhase({ at: 'done', outcome, url: pre.liveUrl, repaired, buildType: pre.buildType });
     } catch (e) {
       setPhase({ at: 'error', message: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
-  // Bounded poll — the finish line is the promise, but we don't hang forever if
-  // Pages is slow. Either outcome ends on the live link; a slow build just says
-  // so rather than spinning.
-  async function watchBuild(gh: ReturnType<typeof createClient>, sha: string) {
-    for (let i = 0; i < 18; i++) {
-      const state = await gh.getBuildState(sha).catch(() => null);
-      if (state?.status === 'completed') return;
-      await sleep(5000);
     }
   }
 
@@ -120,44 +127,59 @@ export function Installer() {
           <section>
             <p>{IMSG.landingBody}</p>
             <p class="note">{IMSG.landingNeeds}</p>
-            <label>
-              {IMSG.repoLabel}
-              <input
-                value={repo}
-                placeholder="you/your-site"
-                onInput={(e) => setRepo((e.target as HTMLInputElement).value)}
-              />
-            </label>
-            <p class="note">{IMSG.repoWhyTyped}</p>
-            {tokenError && <p class="banner error">{tokenError}</p>}
-            <button onClick={submitRepo}>Continue →</button>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitRepo();
+              }}
+            >
+              <label>
+                {IMSG.repoLabel}
+                <input
+                  value={repo}
+                  placeholder="you/your-site"
+                  onInput={(e) => setRepo((e.target as HTMLInputElement).value)}
+                />
+              </label>
+              <p class="note">{IMSG.repoWhyTyped}</p>
+              {tokenError && <p class="banner error">{tokenError}</p>}
+              <button type="submit">Continue →</button>
+            </form>
           </section>
         );
 
       case 'token':
         return (
           <section>
-            <p>
-              Create a fine-grained token so this editor can publish to <code>{repo}</code>. The
-              link pre-fills everything it can:
-            </p>
-            <p>
-              <a href={tokenTemplateUrl(owner)} target="_blank" rel="noopener noreferrer">
-                Create a token for this site →
-              </a>
-            </p>
-            <p class="callout">{IMSG.shared.dropdownCallout(repo)}</p>
-            <label>
-              Paste the token
-              <input
-                type="password"
-                value={token}
-                placeholder="github_pat_…"
-                onInput={(e) => setToken((e.target as HTMLInputElement).value)}
-              />
-            </label>
-            {tokenError && <p class="banner error">{tokenError}</p>}
-            <button onClick={submitToken}>Check &amp; continue →</button>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitToken();
+              }}
+            >
+              <p>
+                Create a fine-grained token so this editor can publish to <code>{repo}</code>. The
+                link pre-fills everything it can:
+              </p>
+              <p>
+                <a href={tokenTemplateUrl(owner)} target="_blank" rel="noopener noreferrer">
+                  Create a token for this site →
+                </a>
+              </p>
+              <p class="callout">{IMSG.shared.dropdownCallout(repo)}</p>
+              <label>
+                Paste the token
+                <input
+                  type="password"
+                  value={token}
+                  placeholder="github_pat_…"
+                  onInput={(e) => setToken((e.target as HTMLInputElement).value)}
+                />
+              </label>
+              <p class="note">{IMSG.keepTokenNote}</p>
+              {tokenError && <p class="banner error">{tokenError}</p>}
+              <button type="submit">Check &amp; continue →</button>
+            </form>
           </section>
         );
 
@@ -167,20 +189,27 @@ export function Installer() {
       case 'result':
         return renderResult(phase.pre);
 
-      case 'installing':
-        return <p>{phase.note}</p>;
-
-      case 'done':
+      case 'installing': {
+        const committed: StepStatus = phase.step === 'committing' ? 'active' : 'done';
+        const building: StepStatus = phase.step === 'building' ? 'active' : 'pending';
+        const elapsed = phase.step === 'building' ? fmtElapsed(Date.now() - phase.startedAt) : '';
         return (
           <section>
-            <p class="banner ok">
-              ✓ {IMSG.liveAt('')}
-              <a href={phase.url}>{phase.url}</a>
-            </p>
-            {phase.repaired && <p class="note">{IMSG.repairedNote}</p>}
-            <p>Open the link above to write your first post.</p>
+            <h2>Installing your editor</h2>
+            <ul class="steps">
+              <li>{MARK[committed]} Committed</li>
+              <li>
+                {MARK[building]} Building your site{building === 'active' ? `…  ${elapsed}` : ''}
+              </li>
+              <li>{MARK.pending} Live</li>
+            </ul>
+            <p class="note">{IMSG.buildingStatus}</p>
           </section>
         );
+      }
+
+      case 'done':
+        return renderDone(phase);
 
       case 'error':
         return (
@@ -192,6 +221,65 @@ export function Installer() {
     }
   }
 
+  function renderDone(p: Extract<Phase, { at: 'done' }>) {
+    const live = p.outcome === 'live';
+    const failed = p.outcome === 'failed';
+    const buildMark: StepStatus = live
+      ? 'done'
+      : failed
+        ? 'failed'
+        : p.outcome === 'not-building'
+          ? 'pending'
+          : 'active';
+    const liveMark: StepStatus = live ? 'done' : 'pending';
+    return (
+      <section>
+        <ul class="steps">
+          <li>{MARK.done} Committed</li>
+          <li>{MARK[buildMark]} Building your site</li>
+          <li>{MARK[liveMark]} Live</li>
+        </ul>
+        {live && (
+          <>
+            <p class="banner ok">
+              ✓ {IMSG.liveAt('')}
+              <a href={p.url}>{p.url}</a>
+            </p>
+            {p.repaired && <p class="note">{IMSG.repairedNote}</p>}
+            <p>Open the link above to write your first post.</p>
+            <p class="note">{IMSG.signInAgainNote}</p>
+          </>
+        )}
+        {p.outcome === 'building' && (
+          <>
+            <p class="banner">{IMSG.stillBuilding}</p>
+            {p.buildType === 'workflow' && <p class="note">{IMSG.workflowWarning}</p>}
+            <p>
+              <a href={p.url}>{p.url}</a>
+            </p>
+          </>
+        )}
+        {p.outcome === 'not-building' && (
+          <>
+            <p class="banner error">{IMSG.notBuilding}</p>
+            {p.buildType === 'workflow' && <p class="note">{IMSG.workflowWarning}</p>}
+            <p>
+              <a href={p.url}>{p.url}</a>
+            </p>
+          </>
+        )}
+        {failed && (
+          <>
+            <p class="banner error">{IMSG.buildFailed}</p>
+            <p>
+              <a href={p.url}>{p.url}</a>
+            </p>
+          </>
+        )}
+      </section>
+    );
+  }
+
   function renderResult(pre: Preflight) {
     if (!pre.ok) {
       const [message, extra] =
@@ -199,7 +287,9 @@ export function Installer() {
           ? [IMSG.unreachable, null]
           : pre.gate === 'no-pages'
             ? [IMSG.noPages, null]
-            : [IMSG.insecure, IMSG.insecureIsDefault];
+            : pre.gate === 'not-jekyll'
+              ? [IMSG.notJekyll, null]
+              : [IMSG.insecure, IMSG.insecureIsDefault];
       return (
         <section>
           <p class="banner error">{message}</p>
