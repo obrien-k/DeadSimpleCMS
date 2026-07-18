@@ -474,6 +474,71 @@ describe('write probe', () => {
   });
 });
 
+describe('auth expiry takeover (#30)', () => {
+  it('fires onAuthError with the last-seen expiry on a REST 401, and still throws', async () => {
+    let seen: Date | null | undefined;
+    let n = 0;
+    const { fetchImpl } = fake([
+      () => {
+        n += 1;
+        // First call reports the expiry; the second, a dead-token 401. The hook
+        // must carry the date the token last reported, not whatever the 401 body
+        // holds.
+        return n === 1
+          ? json({ sha: 't', tree: [], truncated: false }, 200, {
+              'github-authentication-token-expiration': '2020-01-01 00:00:00 UTC',
+            })
+          : json({ message: 'Bad credentials' }, 401);
+      },
+    ]);
+    const c = createClient({
+      token: 't',
+      repo: 'owner/site',
+      fetch: fetchImpl as typeof fetch,
+      onAuthError: (e) => {
+        seen = e;
+      },
+    });
+    await c.getTree('main');
+    await expect(c.getTree('main')).rejects.toMatchObject({ status: 401 });
+    expect(seen).toEqual(new Date('2020-01-01T00:00:00Z'));
+  });
+
+  it('fires onAuthError on a GraphQL 401 too — a dead token fails with a real status', async () => {
+    let fired = false;
+    const { fetchImpl } = fake([
+      (c) => (c.url.endsWith('/graphql') ? json({ message: 'Bad credentials' }, 401) : undefined),
+    ]);
+    const c = createClient({
+      token: 't',
+      repo: 'owner/site',
+      fetch: fetchImpl as typeof fetch,
+      onAuthError: () => {
+        fired = true;
+      },
+    });
+    await expect(c.queryPaths({ branch: 'main', dirs: ['_posts'] })).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(fired).toBe(true);
+  });
+
+  it('does not fire on non-401 failures — a 404 is not a dead token', async () => {
+    let fired = false;
+    const { fetchImpl } = fake([() => json({ message: 'Not Found' }, 404)]);
+    const c = createClient({
+      token: 't',
+      repo: 'owner/site',
+      fetch: fetchImpl as typeof fetch,
+      onAuthError: () => {
+        fired = true;
+      },
+    });
+    await expect(c.getRepo()).rejects.toMatchObject({ status: 404 });
+    expect(fired).toBe(false);
+  });
+});
+
 describe('GhError', () => {
   it('is an Error with a status', () => {
     const e = new GhError('nope', 500);

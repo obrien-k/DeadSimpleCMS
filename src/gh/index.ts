@@ -139,9 +139,15 @@ export interface ClientOptions {
   /** "owner/name" */
   repo: string;
   fetch?: typeof fetch;
+  // Fired on any 401 with the last expiry date the token reported (#30). An
+  // established session's token going dead breaks every call, so this is wired
+  // once here rather than caught at six call sites — one signal, whole-app
+  // takeover. Carries the last-seen expiry so the caller can say "expired on
+  // <date>" versus a token that was revoked while still inside its window.
+  onAuthError?: (expiry: Date | null) => void;
 }
 
-export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOptions) {
+export function createClient({ token, repo, fetch: fetchImpl = fetch, onAuthError }: ClientOptions) {
   const [owner, name] = repo.split('/');
   let expiry: Date | null = null;
   let repoInfo: RepoInfo | null = null;
@@ -165,6 +171,7 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) {
+      if (res.status === 401) onAuthError?.(expiry);
       const message = (data as { message?: string } | null)?.message ?? text;
       throw new GhError(
         `${method} ${path} → ${res.status}: ${message}`,
@@ -185,8 +192,11 @@ export function createClient({ token, repo, fetch: fetchImpl = fetch }: ClientOp
       body: JSON.stringify({ query, ...(variables ? { variables } : {}) }),
     });
     const body = (await res.json()) as { data?: T; errors?: { message: string }[] };
-    // GraphQL's trap: errors arrive as HTTP 200 with an `errors` array.
+    // GraphQL's trap: errors arrive as HTTP 200 with an `errors` array. A dead
+    // token is the exception — it fails with a real 401, so the expiry takeover
+    // fires from the status, not the errors array.
     if (!res.ok || body.errors?.length) {
+      if (res.status === 401) onAuthError?.(expiry);
       const message = body.errors?.map((e) => e.message).join('; ') ?? `HTTP ${res.status}`;
       throw new GhError(`graphql → ${message}`, res.status);
     }

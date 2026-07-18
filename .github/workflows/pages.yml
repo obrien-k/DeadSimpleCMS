@@ -32,7 +32,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # enablement: true provisions the Pages site (source = GitHub Actions) on
+      # the first run, so no manual Settings → Pages visit is needed. The
+      # workflow token's pages: write permission (declared above) authorises it.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - run: pnpm install --frozen-lockfile
       # Order matters: the library build emits dist/bundle.js, which the
       # installer build copies in as an install payload.

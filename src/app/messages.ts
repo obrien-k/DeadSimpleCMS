@@ -98,7 +98,16 @@ export const MSG = {
   dropdownCallout: (repo: string) =>
     `On the token page, under “Repository access”, choose ONLY ${repo}. That dropdown is the one thing keeping this token limited to your site.`,
   expiryWarning: (days: number) =>
-    `Your GitHub token expires in ${days} day${days === 1 ? '' : 's'}. Create a new one soon, or publishing will stop working.`,
+    `Your GitHub token expires in ${days} day${days === 1 ? '' : 's'}. Regenerate it or create a new one before publishing stops.`,
+  // Post-expiry, after the 401 the pre-expiry banner tried to head off (#30).
+  // Same honesty floor as the build-failure work (#9): a raw "401 Bad
+  // credentials" sends a git-averse writer hunting a fault that is only a lapsed
+  // token. With a date we name it; a 401 inside the token's window means revoked
+  // or repo-deselected instead, so the copy degrades rather than guessing.
+  tokenExpired: (on: string | null) =>
+    on
+      ? `Your GitHub token expired on ${on}, so publishing stopped working. Regenerate the one you already made, or create a fresh one, then paste it below to pick up where you left off.`
+      : `Your GitHub token is no longer valid — it may have been revoked, or its access to this repository removed. Regenerate the one you already made, or create a fresh one, then paste it below.`,
   staleEdit:
     'Saved. Heads up: the live page can keep showing the old text for up to 10 minutes after an edit.',
   // Row 4 of #17's ladder: neither _config.yml nor _posts/ at the resolved
