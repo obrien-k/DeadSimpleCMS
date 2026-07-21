@@ -11,18 +11,23 @@ How the engineering skills should consume this repo's domain documentation when 
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
-Neither exists yet — that is expected, not a gap to fix.
+`docs/adr/` exists and holds ADR-0001 through ADR-0021, extracted from `docs/DESIGN.md`'s decision log in July 2026. Start at `docs/adr/README.md` — it indexes all of them and gives a reading order. `CONTEXT.md` does not exist yet; that is expected, not a gap to fix.
 
-Note that `docs/DESIGN.md` is **not** one of these files: it is the product design and its decision log, written for humans, and it predates this setup. Read it for background on what the project is and why it rejected a Decap fork; it is not a domain glossary and is not maintained by `/domain-modeling`. Where the two eventually overlap, `CONTEXT.md` owns the vocabulary.
+`docs/DESIGN.md` is now the **product** document: thesis, constraints, system shape, accepted limits, and a pointer table into `docs/adr/`. Read it for what the project is and why it exists. It is not a domain glossary and is not maintained by `/domain-modeling`; where the two eventually overlap, `CONTEXT.md` owns the vocabulary. It no longer holds a decision log — an ADR is the authority on any decision.
+
+PRDs for unbuilt work live as GitHub issues labelled `prd` (see `issue-tracker.md`), and `docs/DESIGN.md` links them from its "Deferred and out of scope" table.
 
 ## File structure
 
 ```
 /
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-git-data-api-for-writes.md
-│   └── 0002-yaml-cst-for-front-matter.md
+├── CONTEXT.md              (not yet created)
+├── docs/
+│   ├── DESIGN.md           product thesis + pointers
+│   └── adr/
+│       ├── README.md       index and reading order
+│       ├── 0001-git-data-api-for-writes.md
+│       └── … through 0021
 └── src/
 ```
 
